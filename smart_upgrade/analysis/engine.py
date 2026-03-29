@@ -105,9 +105,15 @@ def _finding_category_from_str(value: str) -> FindingCategory:
 
 
 def _ecosystem_for_source(source: PackageSource) -> str:
-    """Map a PackageSource to an OSV ecosystem name."""
+    """Map a PackageSource to an OSV ecosystem name.
+
+    Homebrew is not a valid OSV ecosystem. We return ``"Homebrew"``
+    anyway and let :func:`query_osv` handle the skip gracefully.
+    """
     if source == PackageSource.APT:
         return "Debian"
+    # Homebrew packages are not tracked by OSV.dev.  The query_osv()
+    # function will detect this and return an empty result.
     return "Homebrew"
 
 

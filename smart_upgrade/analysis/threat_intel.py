@@ -28,6 +28,19 @@ def _http_get(url: str, headers: dict[str, str] | None = None, timeout: int = 30
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # Try to extract a structured error message from the response body.
+        detail = ""
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            detail = body.get("error", {}).get("detail", "") or body.get("message", "")
+        except Exception:
+            pass
+        if detail:
+            logger.warning("HTTP GET %s failed (HTTP %d): %s", url, exc.code, detail)
+        else:
+            logger.warning("HTTP GET %s failed: HTTP %d %s", url, exc.code, exc.reason)
+        return {}
     except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
         logger.warning("HTTP GET %s failed: %s", url, exc)
         return {}
@@ -41,6 +54,18 @@ def _http_post_json(url: str, body: dict, headers: dict[str, str] | None = None,
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            body_resp = json.loads(exc.read().decode("utf-8"))
+            detail = body_resp.get("error", {}).get("detail", "") or body_resp.get("message", "")
+        except Exception:
+            pass
+        if detail:
+            logger.warning("HTTP POST %s failed (HTTP %d): %s", url, exc.code, detail)
+        else:
+            logger.warning("HTTP POST %s failed: HTTP %d %s", url, exc.code, exc.reason)
+        return {}
     except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
         logger.warning("HTTP POST %s failed: %s", url, exc)
         return {}
@@ -60,10 +85,21 @@ def query_brave_search(
     The search query is crafted to surface supply-chain attack reports,
     compromised maintainers, and malicious package advisories.
     """
-    query = f'"{package_name}" (supply chain attack OR compromised OR malware OR vulnerability OR CVE)'
-    url = f"https://api.search.brave.com/res/v1/web/search?q={urllib.request.quote(query)}&count=5&freshness=pm"
+    query = f'"{package_name}" supply chain attack OR compromised OR malware OR vulnerability OR CVE'
+    url = (
+        f"https://api.search.brave.com/res/v1/web/search"
+        f"?q={urllib.request.quote(query)}"
+        f"&count=5"
+    )
 
-    data = _http_get(url, headers={"X-Subscription-Token": api_key}, timeout=timeout)
+    data = _http_get(url, headers={"X-Subscription-Token": api_key, "Accept": "application/json"}, timeout=timeout)
+
+    if not data:
+        logger.warning(
+            "Brave Search returned no data for %s. "
+            "Check that BRAVE_SEARCH_API_KEY is set to a valid key.",
+            package_name,
+        )
 
     findings: list[str] = []
     results = data.get("web", {}).get("results", [])
@@ -90,6 +126,11 @@ def query_brave_search(
 # OSV.dev
 # ---------------------------------------------------------------------------
 
+# OSV ecosystem names that are known to work with the OSV.dev API.
+# Homebrew is NOT a valid OSV ecosystem — brew packages should be skipped.
+_VALID_OSV_ECOSYSTEMS = {"Debian", "Alpine", "PyPI", "npm", "crates.io", "Go", "Maven", "NuGet", "Packagist", "RubyGems"}
+
+
 def query_osv(
     package_name: str,
     ecosystem: str = "Debian",
@@ -101,12 +142,23 @@ def query_osv(
     Parameters
     ----------
     ecosystem:
-        OSV ecosystem name.  ``"Debian"`` for apt, ``"Homebrew"`` for brew
-        (note: Homebrew ecosystem support in OSV may be limited).
+        OSV ecosystem name.  ``"Debian"`` for apt packages.  Homebrew
+        packages are not tracked by OSV — the caller should pass a
+        valid ecosystem or this function will return an empty result.
     version:
         The new version being upgraded to.  If supplied, only vulns
         affecting that version are returned.
     """
+    if ecosystem not in _VALID_OSV_ECOSYSTEMS:
+        logger.info("OSV skipped for %s: ecosystem %r is not supported by OSV.dev", package_name, ecosystem)
+        return ThreatIntelResult(
+            source="osv",
+            query=f"{package_name} ({ecosystem})",
+            findings=[],
+            raw_data={},
+            severity=RiskLevel.CLEAR,
+        )
+
     url = "https://api.osv.dev/v1/query"
     body: dict[str, Any] = {"package": {"name": package_name, "ecosystem": ecosystem}}
     if version:

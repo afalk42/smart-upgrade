@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
+import urllib.error
+import urllib.request
 
 from smart_upgrade.models import PackageSource, PendingUpgrade
 
@@ -162,22 +165,74 @@ class BrewAdapter:
         return info
 
     # ------------------------------------------------------------------
-    # Changelog / formula diff retrieval
+    # Changelog / release notes retrieval
     # ------------------------------------------------------------------
 
-    def get_changelog(self, package_name: str) -> str:
-        """Retrieve recent git log for a Homebrew formula/cask.
+    # Matches "https://github.com/<owner>/<repo>/..." URLs.
+    _GITHUB_RE = re.compile(r"https://github\.com/([^/]+)/([^/]+)")
 
-        Uses ``brew log --oneline -20`` to get the last 20 formula commits.
-        Returns the log text, or an empty string on failure.
+    def get_changelog(self, package_name: str) -> str:
+        """Retrieve release notes for a Homebrew package.
+
+        Strategy:
+        1. Run ``brew info --json=v2`` to get the upstream source URL.
+        2. If the source is on GitHub, fetch the release notes for the
+           new version tag via the GitHub API.
+        3. Fall back to an empty string if the source is not on GitHub
+           or if the API call fails.
+
+        This is more reliable than ``brew log`` which depends on the
+        local Homebrew git history and often returns nothing on shallow
+        clones.
         """
-        result = subprocess.run(
-            ["brew", "log", "--oneline", "-20", package_name],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            logger.warning("Could not retrieve changelog for %s: %s", package_name, result.stderr.strip())
+        # Step 1: get the source URL from brew info.
+        info = self.get_package_info(package_name)
+        source_url = info.get("source_repo", "") or info.get("homepage", "")
+
+        m = self._GITHUB_RE.match(source_url)
+        if not m:
+            # Try the homepage as a fallback.
+            homepage = info.get("homepage", "")
+            m = self._GITHUB_RE.match(homepage)
+        if not m:
+            logger.info("No GitHub URL found for %s; cannot fetch release notes", package_name)
             return ""
-        return result.stdout.strip()
+
+        owner, repo = m.group(1), m.group(2)
+        return self._fetch_github_release_notes(owner, repo, package_name)
+
+    def _fetch_github_release_notes(self, owner: str, repo: str, package_name: str) -> str:
+        """Fetch the latest release notes from GitHub for *owner/repo*.
+
+        Tries the ``/releases/latest`` endpoint first. Returns the
+        release body (Markdown) or an empty string on failure.
+        """
+        url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "smart-upgrade",
+        }
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
+            logger.warning("GitHub release notes fetch failed for %s: %s", package_name, exc)
+            return ""
+
+        tag = data.get("tag_name", "")
+        name = data.get("name", "")
+        body = data.get("body", "")
+
+        if not body:
+            logger.info("GitHub release %s for %s has no body text", tag, package_name)
+            return ""
+
+        # Prefix with the release tag/name for context, then truncate.
+        header = f"GitHub Release: {name or tag}\n\n"
+        # Limit to ~4000 chars to keep Claude prompts manageable.
+        max_len = 4000
+        if len(body) > max_len:
+            body = body[:max_len] + "\n\n... (truncated)"
+
+        return header + body
