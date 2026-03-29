@@ -103,7 +103,54 @@ class BrewAdapter:
                 )
             )
 
+        # Enrich with metadata from `brew info` (homepage, source repo, tap).
+        self._enrich_metadata(upgrades)
+
         return upgrades
+
+    def _enrich_metadata(self, packages: list[PendingUpgrade]) -> None:
+        """Fill in homepage, source_repo, and maintainer via a single ``brew info`` call."""
+        if not packages:
+            return
+
+        names = [p.name for p in packages]
+        result = subprocess.run(
+            ["brew", "info", "--json=v2", *names],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.warning("brew info failed; package metadata will be incomplete")
+            return
+
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return
+
+        # Build lookup dicts from the info response.
+        formula_info: dict[str, dict] = {}
+        for f in data.get("formulae", []):
+            formula_info[f.get("name", "")] = f
+
+        cask_info: dict[str, dict] = {}
+        for c in data.get("casks", []):
+            # Cask "token" is the identifier (e.g. "firefox").
+            cask_info[c.get("token", c.get("name", ""))] = c
+
+        for pkg in packages:
+            if pkg.source == PackageSource.BREW_FORMULA:
+                info = formula_info.get(pkg.name, {})
+                pkg.homepage = info.get("homepage")
+                pkg.source_repo = (
+                    info.get("urls", {}).get("stable", {}).get("url")
+                )
+                pkg.maintainer = info.get("tap")
+            elif pkg.source == PackageSource.BREW_CASK:
+                info = cask_info.get(pkg.name, {})
+                pkg.homepage = info.get("homepage")
+                pkg.maintainer = info.get("tap")
 
     # ------------------------------------------------------------------
     # Upgrade

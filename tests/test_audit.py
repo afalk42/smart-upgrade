@@ -65,6 +65,17 @@ class TestWriteAuditLog:
         assert data["platform"] == "linux-apt"
         assert data["upgraded"] == ["curl"]
 
+        # Verify decisions are compact (no duplicated analysis/package data).
+        decisions = data["decisions"]
+        assert len(decisions) == 1
+        d = decisions[0]
+        assert d["package"] == "curl"
+        assert d["approved"] is True
+        assert d["risk_level"] == "clear"
+        # Should NOT contain nested package or analysis objects.
+        assert "current_version" not in d
+        assert "findings" not in d
+
     def test_restrictive_permissions(self, tmp_path):
         pkg = PendingUpgrade("curl", "1.0", "2.0", PackageSource.APT)
         entry = build_audit_entry("linux-apt", "APT", [pkg], [], [], [], [])

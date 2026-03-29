@@ -127,7 +127,12 @@ def query_brave_search(
 # ---------------------------------------------------------------------------
 
 # OSV ecosystem names that are known to work with the OSV.dev API.
-# Homebrew is NOT a valid OSV ecosystem — brew packages should be skipped.
+# Homebrew is NOT a valid OSV ecosystem.  Brew formulae build from
+# upstream source (GitHub, tarballs, etc.) and are not tracked as a
+# distinct ecosystem in OSV.  Vulnerability data for the same
+# upstream code is available through NVD/CVE, which we query
+# separately — so skipping OSV for brew packages does not create a
+# coverage gap.
 _VALID_OSV_ECOSYSTEMS = {"Debian", "Alpine", "PyPI", "npm", "crates.io", "Go", "Maven", "NuGet", "Packagist", "RubyGems"}
 
 
@@ -150,7 +155,7 @@ def query_osv(
         affecting that version are returned.
     """
     if ecosystem not in _VALID_OSV_ECOSYSTEMS:
-        logger.info("OSV skipped for %s: ecosystem %r is not supported by OSV.dev", package_name, ecosystem)
+        logger.debug("OSV skipped for %s: ecosystem %r is not tracked by OSV.dev (NVD is used instead)", package_name, ecosystem)
         return ThreatIntelResult(
             source="osv",
             query=f"{package_name} ({ecosystem})",

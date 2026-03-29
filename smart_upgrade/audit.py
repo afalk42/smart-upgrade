@@ -42,6 +42,28 @@ def _to_serializable(obj: Any) -> Any:
     return obj
 
 
+def _serialize_decisions(decisions: list[UpgradeDecision]) -> list[dict[str, Any]]:
+    """Serialize decisions without duplicating package/analysis data.
+
+    The ``pending_upgrades`` and ``analysis_results`` sections of the
+    audit log already contain the full details.  The decisions section
+    only needs to record what the user decided for each package.
+    """
+    result: list[dict[str, Any]] = []
+    for d in decisions:
+        entry: dict[str, Any] = {
+            "package": d.package.name,
+            "approved": d.approved,
+        }
+        if d.skipped_reason:
+            entry["skipped_reason"] = d.skipped_reason
+        if d.analysis:
+            entry["risk_level"] = d.analysis.risk_level.value
+            entry["recommendation"] = d.analysis.recommendation.value
+        result.append(entry)
+    return result
+
+
 def build_audit_entry(
     platform: str,
     package_manager: str,
@@ -79,6 +101,12 @@ def write_audit_log(entry: AuditEntry, log_dir: Path) -> Path:
     path = log_dir / filename
 
     data = _to_serializable(entry)
+
+    # Replace the fully-expanded decisions with the compact version
+    # that only records per-package decision data (package name,
+    # approved/skipped, risk level) — without duplicating the full
+    # PendingUpgrade and AnalysisResult already present above.
+    data["decisions"] = _serialize_decisions(entry.decisions)
 
     with open(path, "w", encoding="utf-8") as fh:
         yaml.dump(data, fh, default_flow_style=False, sort_keys=False, allow_unicode=True)
