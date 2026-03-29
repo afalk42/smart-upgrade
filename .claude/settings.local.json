@@ -8,7 +8,19 @@
       "Bash(source .venv/bin/activate)",
       "Bash(pip install:*)",
       "Bash(python3 -m pytest tests/ -v)",
-      "Bash(python3 -m pytest tests/ -v --tb=short)"
+      "Bash(python3 -m pytest tests/ -v --tb=short)",
+      "Bash(source /Users/alf/Documents/GitHub/smart-upgrade/.venv/bin/activate)",
+      "Bash(smart-upgrade --version)",
+      "Bash(smart-upgrade --help)",
+      "Bash(pip show:*)",
+      "Bash(python3 -c \"import smart_upgrade; print\\(smart_upgrade.__version__\\)\")",
+      "Bash(/Users/alf/Documents/GitHub/smart-upgrade/.venv/bin/python3.14 -c \"import smart_upgrade; print\\(smart_upgrade.__version__\\)\")",
+      "Bash(/Users/alf/Documents/GitHub/smart-upgrade/.venv/bin/smart-upgrade --version)",
+      "Bash(/Users/alf/Documents/GitHub/smart-upgrade/.venv/bin/python3.14 /Users/alf/Documents/GitHub/smart-upgrade/.venv/bin/smart-upgrade --version 2>&1)",
+      "Bash(/Users/alf/Documents/GitHub/smart-upgrade/.venv/bin/python3.14 -c \"import sys; print\\(sys.path\\)\")",
+      "Bash(ls:*)",
+      "Bash(python3 -m venv /Users/alf/Documents/GitHub/smart-upgrade/.venv)",
+      "Bash(pytest /Users/alf/Documents/GitHub/smart-upgrade/tests/ -v)"
     ]
   }
 }

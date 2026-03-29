@@ -37,16 +37,42 @@ Instead of blindly running `apt upgrade` or `brew upgrade`, `smart-upgrade` inse
 ```bash
 git clone https://github.com/afalk42/smart-upgrade.git
 cd smart-upgrade
-pip install -e .
+python3 -m venv .venv
+source .venv/bin/activate
+pip install .
 ```
 
-This installs `smart-upgrade` as a command available in your shell.
+This creates an isolated Python virtual environment, installs `smart-upgrade`
+into it, and makes the `smart-upgrade` command available in your shell.
+
+> **Why a virtual environment?** Modern Python installations (Homebrew, Debian
+> 12+, Ubuntu 23.04+) enforce [PEP 668](https://peps.python.org/pep-0668/)
+> and block `pip install` outside a venv to protect system packages. The venv
+> is the standard, recommended way to install Python tools.
+
+Each time you open a new terminal, activate the venv before running:
+
+```bash
+cd smart-upgrade
+source .venv/bin/activate
+```
+
+To avoid this step, you can add a shell alias to your `~/.zshrc` or `~/.bashrc`:
+
+```bash
+alias smart-upgrade='~/path/to/smart-upgrade/.venv/bin/smart-upgrade'
+```
 
 ### Alternative: run without installing
+
+If you prefer not to install the package, you can run directly from the repo.
+You still need a venv for the dependencies:
 
 ```bash
 git clone https://github.com/afalk42/smart-upgrade.git
 cd smart-upgrade
+python3 -m venv .venv
+source .venv/bin/activate
 pip install pyyaml rich       # install dependencies
 ./scripts/smart-upgrade       # run directly
 ```
@@ -258,12 +284,17 @@ See [SPECIFICATION.md](SPECIFICATION.md) for the complete threat model.
 ### Setup
 
 ```bash
-git clone https://github.com/<your-username>/smart-upgrade.git
+git clone https://github.com/afalk42/smart-upgrade.git
 cd smart-upgrade
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
+
+> **Note on editable installs:** `pip install -e .` (editable mode) lets you
+> modify source code without reinstalling. If you hit import issues with the
+> `smart-upgrade` console command (seen on Python 3.14), use
+> `python3 -m smart_upgrade` instead, or install non-editable with `pip install ".[dev]"`.
 
 ### Run tests
 
