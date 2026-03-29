@@ -1,0 +1,159 @@
+# CLAUDE.md -- Instructions for AI Agents
+
+This file provides context for Claude Code and other AI agents working on the
+`smart-upgrade` project. Read this before making changes.
+
+## Project Overview
+
+`smart-upgrade` is a security-aware CLI tool that wraps system package managers
+(`apt` on Debian/Ubuntu, `brew` on macOS) with an AI-powered security review
+layer. It uses the Claude CLI programmatically to analyze pending upgrades for
+supply-chain threats before installing them.
+
+**Key design document:** `SPECIFICATION.md` contains the full specification,
+including architecture, data models, execution flow, and threat model. Read it
+before making architectural changes.
+
+## Tech Stack
+
+- **Language:** Python 3.10+ (uses `from __future__ import annotations`)
+- **Dependencies (runtime):** `pyyaml`, `rich` -- deliberately minimal
+- **Dependencies (dev):** `pytest`, `pytest-mock`
+- **HTTP:** `urllib.request` (stdlib) -- no `requests` library
+- **CLI framework:** `argparse` (stdlib)
+- **TUI output:** `rich` (not `textual` -- see SPECIFICATION.md Section 10.2)
+
+## Architecture
+
+```
+cli.py (entry point, orchestration)
+  -> config.py (YAML config loading)
+  -> platform_detect.py (OS detection)
+  -> adapters/{apt,brew}.py (package manager wrappers)
+  -> analysis/engine.py (3-layer security analysis orchestrator)
+       -> analysis/claude_invoker.py (claude CLI wrapper)
+       -> analysis/threat_intel.py (Brave/OSV/NVD API clients)
+       -> analysis/changelog.py (changelog retrieval)
+  -> whitelist.py (glob-based package whitelisting)
+  -> audit.py (YAML audit log writer)
+  -> ui.py (rich-based terminal output)
+```
+
+**Data flows one direction:** `cli.py` orchestrates everything. The analysis
+engine, adapters, and UI modules do not call each other directly.
+
+## Critical Design Constraints
+
+1. **Never run as root.** The tool always runs as the regular user. Only the
+   APT adapter invokes `sudo` internally for `apt update` and `apt upgrade`.
+   Homebrew needs no elevation. See SPECIFICATION.md Section 4.0 and 13.4.
+
+2. **Claude CLI is required.** There is no `--skip-analysis` flag. If `claude`
+   is not on `$PATH`, the tool exits with an error. Users who want to skip
+   analysis should use `apt upgrade` or `brew upgrade` directly.
+
+3. **Minimal dependencies.** Use stdlib wherever possible. HTTP calls use
+   `urllib.request`, not `requests`. Only add new dependencies with strong
+   justification.
+
+4. **Prompt templates are versioned files.** The prompts in `smart_upgrade/prompts/`
+   are critical to the tool's security analysis quality. Changes to prompts should
+   be treated as carefully as code changes.
+
+## Code Conventions
+
+- **Type hints everywhere.** All functions have full type annotations.
+- **Dataclasses for data, Protocols for interfaces.** See `models.py` and
+  `adapters/base.py`.
+- **Enums for fixed sets.** `RiskLevel`, `Recommendation`, `PackageSource`,
+  `FindingCategory` are all enums.
+- **Risk level comparison.** Don't compare `RiskLevel.value` strings directly
+  (alphabetical order != severity order). Use `_more_severe_risk()` and
+  `_more_severe_rec()` from `analysis/engine.py`.
+- **Logging.** Use `logging.getLogger(__name__)` in each module. User-facing
+  output goes through `ui.py`, not `print()`.
+
+## Testing
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run a specific test file
+pytest tests/test_config.py -v
+
+# Run a specific test class
+pytest tests/test_whitelist.py::TestIsWhitelisted -v
+```
+
+Tests are organized by module. All external calls (subprocess, HTTP) are mocked.
+Test fixtures live in `tests/fixtures/`.
+
+**When adding a new module**, create a corresponding `tests/test_<module>.py`.
+
+## Common Tasks
+
+### Adding a new package manager adapter
+
+1. Create `smart_upgrade/adapters/<name>.py` implementing the same interface as
+   `apt.py` / `brew.py` (see `base.py` for the Protocol).
+2. Add the platform detection logic in `platform_detect.py`.
+3. Add the adapter instantiation in `cli.py:_create_adapter()`.
+4. Add whitelist support in `config.py` (WhitelistConfig) and `whitelist.py`.
+5. Add tests in `tests/test_<name>_adapter.py`.
+6. Update `SPECIFICATION.md` Section 3 (supported platforms table).
+
+### Adding a new threat intelligence source
+
+1. Add the query function in `analysis/threat_intel.py` following the pattern of
+   `query_osv()` / `query_nvd()` / `query_brave_search()`.
+2. Add it to `gather_threat_intel()` with an enable flag.
+3. Add config support in `config.py` (ThreatIntelConfig).
+4. Update the Layer B prompt template if the new source needs special handling.
+5. Add tests in `tests/test_threat_intel.py`.
+
+### Modifying Claude prompts
+
+1. Edit the template in `smart_upgrade/prompts/`.
+2. Verify the JSON schema in the prompt matches what `analysis/engine.py` expects.
+3. Test with `smart-upgrade --dry-run` to verify Claude returns parseable output.
+
+## File-by-File Reference
+
+| File | Purpose | Key details |
+|---|---|---|
+| `cli.py` | Entry point | `main()` function, 5-step orchestration flow |
+| `config.py` | Config loading | YAML from `~/.config/smart-upgrade/config.yaml`, env vars for API keys |
+| `models.py` | Data structures | All dataclasses and enums live here |
+| `platform_detect.py` | OS detection | Reads `/etc/os-release` on Linux, `platform.system()` for macOS |
+| `adapters/apt.py` | APT wrapper | Parses `apt list --upgradable`, uses `sudo` internally |
+| `adapters/brew.py` | Brew wrapper | Parses `brew outdated --json=v2`, handles formulae + casks |
+| `analysis/engine.py` | Analysis orchestrator | Runs Layers A/B/C, merges results |
+| `analysis/claude_invoker.py` | Claude CLI wrapper | `claude -p --model <model>`, retry logic, JSON parsing |
+| `analysis/threat_intel.py` | Threat intel clients | Brave Search, OSV.dev, NVD -- all via `urllib.request` |
+| `analysis/changelog.py` | Changelog retrieval | Delegates to adapter's `get_changelog()` method |
+| `whitelist.py` | Whitelist matching | `fnmatch` glob patterns, per-package-manager lists |
+| `audit.py` | Audit logging | YAML files in `~/.local/share/smart-upgrade/logs/`, 0600 permissions |
+| `ui.py` | Terminal output | All `rich` usage is here -- tables, panels, progress, prompts |
+
+## Environment Variables
+
+| Variable | Purpose |
+|---|---|
+| `BRAVE_SEARCH_API_KEY` | Brave Search API key for threat intelligence |
+| `NVD_API_KEY` | NIST NVD API key (optional, improves rate limits) |
+| `SMART_UPGRADE_PYTHON` | Override Python interpreter in the shell wrapper script |
+
+## Things to Watch Out For
+
+- **Enum string comparisons.** `RiskLevel` values are strings ("clear", "low",
+  etc.). Alphabetical order does NOT match severity order ("critical" < "high"
+  alphabetically). Always use `_RISK_ORDER` / `_more_severe_risk()`.
+- **subprocess calls.** APT adapter uses `sudo` -- tests must mock `subprocess.run`.
+- **Prompt injection.** Package names and changelog content are inserted into
+  Claude prompts. The prompts instruct Claude to return JSON, but malicious
+  content in changelogs could theoretically attempt prompt injection. The
+  `_parse_json()` method in `claude_invoker.py` handles malformed responses
+  gracefully.
+- **API rate limits.** NVD without an API key is limited to ~5 requests per
+  30 seconds. The tool queries packages sequentially, not in parallel.

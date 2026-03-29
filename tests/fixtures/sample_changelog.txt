@@ -1,0 +1,20 @@
+curl (7.81.0-1ubuntu1.16) jammy-security; urgency=medium
+
+  * SECURITY UPDATE: denial of service via OCSP stapling
+    - debian/patches/CVE-2024-7264.patch: check for NULL in
+      lib/vtls/openssl.c.
+    - CVE-2024-7264
+  * SECURITY UPDATE: cookie injection with redirect
+    - debian/patches/CVE-2024-8096.patch: fix cookie handling
+      in lib/cookie.c.
+    - CVE-2024-8096
+
+ -- Marc Deslauriers <marc.deslauriers@ubuntu.com>  Thu, 12 Sep 2024 13:45:02 -0400
+
+curl (7.81.0-1ubuntu1.15) jammy-security; urgency=medium
+
+  * SECURITY UPDATE: information disclosure via netrc
+    - debian/patches/CVE-2024-0853.patch: fix netrc handling.
+    - CVE-2024-0853
+
+ -- Marc Deslauriers <marc.deslauriers@ubuntu.com>  Mon, 05 Feb 2024 08:12:33 -0500

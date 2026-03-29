@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# ------------------------------------------------------------------
+# smart-upgrade — Shell wrapper for the smart-upgrade Python tool
+#
+# This script provides a convenient entry point for users who
+# clone the repository and run the tool directly without installing
+# it via pip. It locates the Python interpreter and invokes the
+# smart_upgrade package as a module.
+#
+# Usage:
+#   ./scripts/smart-upgrade [options]
+#
+# Environment variables:
+#   SMART_UPGRADE_PYTHON  — Override the Python interpreter
+#                           (default: python3)
+# ------------------------------------------------------------------
+
+set -euo pipefail
+
+# Determine the directory where this script lives, then find the repo root.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Allow the user to override the Python interpreter.
+PYTHON="${SMART_UPGRADE_PYTHON:-python3}"
+
+# Verify Python is available and meets the minimum version.
+if ! command -v "$PYTHON" &>/dev/null; then
+    echo "Error: Python interpreter '$PYTHON' not found." >&2
+    echo "Install Python 3.10+ or set SMART_UPGRADE_PYTHON to the correct path." >&2
+    exit 1
+fi
+
+# Check Python version (need 3.10+).
+PYTHON_VERSION=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+PYTHON_MAJOR=$("$PYTHON" -c "import sys; print(sys.version_info.major)")
+PYTHON_MINOR=$("$PYTHON" -c "import sys; print(sys.version_info.minor)")
+
+if [ "$PYTHON_MAJOR" -lt 3 ] || { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]; }; then
+    echo "Error: Python 3.10+ is required, but found Python $PYTHON_VERSION." >&2
+    exit 1
+fi
+
+# Run the smart_upgrade package from the repo root.
+exec "$PYTHON" -m smart_upgrade "$@"

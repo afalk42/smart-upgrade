@@ -1,0 +1,38 @@
+You are a cybersecurity analyst reviewing the changelog/diff for a package upgrade.
+Look for indicators of supply-chain compromise:
+
+- Obfuscated or encoded payloads (base64, hex-encoded strings, dynamic code execution of encoded data)
+- New network calls or connections to unknown / suspicious endpoints
+- Credential harvesting (reading environment variables for API keys, SSH keys, browser storage, crypto wallets, .npmrc, .pypirc, etc.)
+- Unexpected binary additions or modifications
+- Changes to build scripts that download external resources
+- Dependency additions that seem unrelated to the package's purpose
+- Modifications to authentication, authorization, or cryptographic code
+- Minified or obfuscated code added to an otherwise readable codebase
+- Post-install scripts that execute network requests or write to unexpected locations
+
+Be specific and evidence-based. Only flag things that are genuinely suspicious, not
+routine version bumps or dependency updates that make sense in context.
+
+Package: {{package_name}}
+Upgrade: {{old_version}} → {{new_version}}
+Package Manager: {{package_manager}}
+
+Changelog/Diff:
+{{changelog_content}}
+
+Return your analysis as JSON with this exact schema (no markdown fences, raw JSON only):
+{
+  "risk_level": "clear|low|medium|high|critical",
+  "findings": [
+    {
+      "category": "maintainer_change|suspicious_code|known_cve|supply_chain_news|version_anomaly|dependency_change|obfuscated_payload|credential_harvesting|network_call|other",
+      "severity": "clear|low|medium|high|critical",
+      "description": "what was found",
+      "source": "changelog_review",
+      "reference_url": null
+    }
+  ],
+  "recommendation": "proceed|review|block",
+  "explanation": "human-readable summary of your assessment"
+}
