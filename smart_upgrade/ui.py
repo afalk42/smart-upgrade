@@ -187,8 +187,8 @@ def prompt_upgrade_all() -> bool:
         True if the user approves.
     """
     console.print()
-    answer = console.input("[bold]Proceed with upgrade? [y/N]: [/bold]").strip().lower()
-    return answer in ("y", "yes")
+    answer = console.input("[bold]Proceed with upgrade? \\[Y/n]: [/bold]").strip().lower()
+    return answer in ("y", "yes", "")
 
 
 def prompt_package_decision(result: AnalysisResult) -> str:
@@ -204,9 +204,9 @@ def prompt_package_decision(result: AnalysisResult) -> str:
     console.print(f"\n  [bold]{result.package_name}[/bold] -- Risk: {risk_display} | {rec_display}")
 
     if result.recommendation == Recommendation.BLOCK:
-        prompt_text = "  Security concerns detected. Upgrade anyway? [y/N]: "
+        prompt_text = "  Security concerns detected. Upgrade anyway? \\[y/N]: "
     else:
-        prompt_text = "  Upgrade this package? [y/N/s(kip)]: "
+        prompt_text = "  Upgrade this package? \\[y/N/s(kip)]: "
 
     answer = console.input(prompt_text).strip().lower()
 
