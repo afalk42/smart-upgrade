@@ -230,9 +230,9 @@ export BRAVE_SEARCH_API_KEY="your-brave-api-key"
 export NVD_API_KEY="your-nvd-api-key"
 ```
 
-- **Brave Search**: Required for web-based threat intelligence. Without it, Layer B falls back to OSV + NVD only.
+- **Brave Search**: Required for web-based threat intelligence. Without it, Layer B falls back to NVD only. If the key is set but invalid, you'll see a warning with the specific error from Brave's API.
 - **NVD**: Optional but recommended. Without it, NVD queries are rate-limited (~5 requests per 30 seconds).
-- **OSV.dev**: Free, no API key required.
+- **OSV.dev**: Free, no API key required. Note: OSV only covers packages in supported ecosystems (Debian, PyPI, npm, etc.). Homebrew formulae are not tracked by OSV, so NVD provides the vulnerability coverage for brew packages.
 
 ## Audit Logs
 
@@ -245,7 +245,7 @@ Every run writes a YAML audit log to `~/.local/share/smart-upgrade/logs/`:
   ...
 ```
 
-Each log records: pending upgrades, analysis results, your decisions, which packages were upgraded, and any errors. Files are written with `600` permissions (owner read/write only).
+Each log records: pending upgrades (with metadata like homepage and source repo), analysis results, a compact summary of your decisions (package name, approved/skipped, risk level), which packages were upgraded, and any errors. Files are written with `600` permissions (owner read/write only).
 
 ## Whitelist
 

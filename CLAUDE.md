@@ -127,13 +127,13 @@ Test fixtures live in `tests/fixtures/`.
 | `models.py` | Data structures | All dataclasses and enums live here |
 | `platform_detect.py` | OS detection | Reads `/etc/os-release` on Linux, `platform.system()` for macOS |
 | `adapters/apt.py` | APT wrapper | Parses `apt list --upgradable`, uses `sudo` internally |
-| `adapters/brew.py` | Brew wrapper | Parses `brew outdated --json=v2`, handles formulae + casks |
+| `adapters/brew.py` | Brew wrapper | Parses `brew outdated --json=v2`, enriches metadata via `brew info`, fetches GitHub release notes for changelogs |
 | `analysis/engine.py` | Analysis orchestrator | Runs Layers A/B/C, merges results |
 | `analysis/claude_invoker.py` | Claude CLI wrapper | `claude -p --model <model>`, retry logic, JSON parsing |
-| `analysis/threat_intel.py` | Threat intel clients | Brave Search, OSV.dev, NVD -- all via `urllib.request` |
+| `analysis/threat_intel.py` | Threat intel clients | Brave Search, OSV.dev, NVD -- all via `urllib.request`. OSV only for valid ecosystems (Debian, PyPI, etc. -- not Homebrew) |
 | `analysis/changelog.py` | Changelog retrieval | Delegates to adapter's `get_changelog()` method |
 | `whitelist.py` | Whitelist matching | `fnmatch` glob patterns, per-package-manager lists |
-| `audit.py` | Audit logging | YAML files in `~/.local/share/smart-upgrade/logs/`, 0600 permissions |
+| `audit.py` | Audit logging | YAML files in `~/.local/share/smart-upgrade/logs/`, 0600 permissions. Decisions are serialized compactly (name + approved + reason only, no duplicated analysis data) |
 | `ui.py` | Terminal output | All `rich` usage is here -- tables, panels, progress, prompts |
 
 ## Environment Variables
@@ -149,6 +149,28 @@ Test fixtures live in `tests/fixtures/`.
 - **Enum string comparisons.** `RiskLevel` values are strings ("clear", "low",
   etc.). Alphabetical order does NOT match severity order ("critical" < "high"
   alphabetically). Always use `_RISK_ORDER` / `_more_severe_risk()`.
+- **Rich markup in prompts.** `console.input()` interprets Rich markup. Square
+  brackets like `[Y/n]` are treated as style tags and silently swallowed.
+  Escape the opening bracket: `\\[Y/n]`. This applies to all strings passed
+  to `console.print()` and `console.input()`.
+- **OSV ecosystem coverage.** OSV.dev only tracks packages in specific
+  ecosystems (Debian, PyPI, npm, etc.). Homebrew is NOT a valid ecosystem.
+  The `_VALID_OSV_ECOSYSTEMS` set in `threat_intel.py` gates this — brew
+  packages are skipped with a DEBUG log. NVD provides vulnerability
+  coverage for brew packages instead.
+- **Brew changelog retrieval.** `brew log` does not work reliably (shallow
+  clones, flag incompatibilities). The brew adapter instead fetches GitHub
+  release notes via the API by extracting the owner/repo from `brew info`'s
+  source URL. Non-GitHub packages get no changelog (Layer C is skipped).
+- **Brew metadata enrichment.** `brew outdated --json=v2` does NOT include
+  homepage, source URL, or tap info. The brew adapter runs a separate
+  `brew info --json=v2 <all-packages>` call (batched, single invocation)
+  to populate these fields on each `PendingUpgrade`.
+- **Audit log deduplication.** The `decisions` section of the audit log is
+  serialized compactly via `_serialize_decisions()` — only package name,
+  approved flag, skipped_reason, risk_level, and recommendation. Do NOT
+  use the generic `_to_serializable()` for decisions, as it would duplicate
+  the full PendingUpgrade and AnalysisResult data already present above.
 - **subprocess calls.** APT adapter uses `sudo` -- tests must mock `subprocess.run`.
 - **Prompt injection.** Package names and changelog content are inserted into
   Claude prompts. The prompts instruct Claude to return JSON, but malicious
@@ -157,3 +179,7 @@ Test fixtures live in `tests/fixtures/`.
   gracefully.
 - **API rate limits.** NVD without an API key is limited to ~5 requests per
   30 seconds. The tool queries packages sequentially, not in parallel.
+- **HTTP error handling.** The `_http_get` and `_http_post_json` helpers in
+  `threat_intel.py` parse structured error bodies from API responses (e.g.,
+  Brave's `error.detail` field) for clearer warning messages. Always catch
+  `HTTPError` separately from generic `URLError` to extract these details.
