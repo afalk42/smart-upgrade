@@ -29,6 +29,16 @@ _UPGRADABLE_RE = re.compile(
 #   release v=22.04,o=Ubuntu,a=jammy-updates,n=jammy,l=Ubuntu,c=main,b=amd64
 _RELEASE_LINE_RE = re.compile(r"^\s+release\s+(.+)$")
 
+# Matches a repository source line in `apt-cache policy` output, e.g.:
+#   500 http://archive.raspberrypi.com/debian bookworm/main arm64 Packages
+# Group 1: repo URL, Group 2: suite/component (e.g. "bookworm/main").
+_POLICY_SOURCE_LINE_RE = re.compile(
+    r"^\s+\d+\s+(\S+)\s+(\S+)\s+\S+\s+Packages"
+)
+
+# Matches "Candidate: <version>" in per-package `apt-cache policy` output.
+_PKG_CANDIDATE_RE = re.compile(r"^\s+Candidate:\s+(\S+)")
+
 
 def _parse_policy_origins(policy_output: str) -> dict[str, str]:
     """Parse ``apt-cache policy`` output to map archive names to origin labels.
@@ -65,6 +75,98 @@ def _parse_policy_origins(policy_output: str) -> dict[str, str]:
         for archive, origins in archive_origins.items()
         if len(origins) == 1
     }
+
+
+def _parse_policy_source_origins(policy_output: str) -> dict[str, str]:
+    """Map repo source keys to origin labels from global ``apt-cache policy``.
+
+    Each entry in the global policy lists a repository source line followed
+    by a ``release`` line with metadata.  This function pairs them to build
+    a mapping from ``"<url> <suite/component>"`` to origin label.
+
+    This is more specific than :func:`_parse_policy_origins` (which maps
+    archive name → origin) and resolves ambiguities when multiple repos
+    share the same archive name (e.g. Debian and Raspberry Pi Foundation
+    both using ``bookworm``).
+    """
+    source_origins: dict[str, str] = {}
+    lines = policy_output.splitlines()
+
+    for i, line in enumerate(lines):
+        m = _POLICY_SOURCE_LINE_RE.match(line)
+        if not m:
+            continue
+        source_key = f"{m.group(1)} {m.group(2)}"
+
+        # The release line follows within the next few lines.
+        for j in range(i + 1, min(i + 4, len(lines))):
+            rm = _RELEASE_LINE_RE.match(lines[j])
+            if rm:
+                for field in rm.group(1).split(","):
+                    key, _, value = field.strip().partition("=")
+                    if key == "o" and value:
+                        source_origins[source_key] = value
+                        break
+                break
+
+    return source_origins
+
+
+def _parse_per_package_policy(policy_output: str) -> dict[str, str]:
+    """Parse ``apt-cache policy <pkg> …`` to find each candidate's repo source.
+
+    Returns a dict mapping package name → source key
+    (``"<url> <suite/component>"``) for the candidate version.
+    """
+    result: dict[str, str] = {}
+    current_pkg: str | None = None
+    candidate: str | None = None
+    search_source = False
+    version_indent = 0
+
+    for line in policy_output.splitlines():
+        # Package header (e.g. "linux-headers-rpi-2712:")
+        if line and not line[0].isspace() and line.endswith(":"):
+            current_pkg = line[:-1]
+            candidate = None
+            search_source = False
+            continue
+
+        if current_pkg is None or current_pkg in result:
+            continue
+
+        # "  Candidate: 1:6.12.75-1+rpt1~bookworm"
+        cm = _PKG_CANDIDATE_RE.match(line)
+        if cm:
+            candidate = cm.group(1)
+            continue
+
+        if candidate is None:
+            continue
+
+        # Version table entry containing the candidate version.
+        if not search_source:
+            stripped = line.lstrip()
+            if stripped.startswith("*** "):
+                stripped = stripped[4:]
+            if stripped.startswith(candidate + " "):
+                search_source = True
+                version_indent = len(line) - len(line.lstrip())
+            continue
+
+        # Source lines are more indented than the version entry.
+        current_indent = len(line) - len(line.lstrip())
+        if current_indent <= version_indent:
+            # Hit a new version entry or section — stop searching.
+            search_source = False
+            continue
+
+        sm = _POLICY_SOURCE_LINE_RE.match(line)
+        if sm and not sm.group(1).startswith("/"):
+            result[current_pkg] = f"{sm.group(1)} {sm.group(2)}"
+            search_source = False
+
+    return result
 
 
 class AptAdapter:
@@ -150,8 +252,16 @@ class AptAdapter:
     ) -> None:
         """Set :attr:`apt_origin` on each package by resolving suite → origin.
 
-        Runs ``apt-cache policy`` once to build a mapping from APT archive
-        names to repository origin labels (e.g. ``"Ubuntu"``, ``"Debian"``).
+        Runs ``apt-cache policy`` to build a mapping from APT archive names
+        to repository origin labels (e.g. ``"Ubuntu"``, ``"Debian"``).
+
+        When multiple repos share the same archive name (e.g. Debian and
+        Raspberry Pi Foundation both using ``bookworm``), the archive-based
+        mapping is ambiguous and those packages are left unresolved.  A
+        second call — ``apt-cache policy <unresolved-packages>`` — then
+        identifies the exact repo URL for each package's candidate version
+        and cross-references it against the global policy's release metadata
+        to determine the origin.
         """
         try:
             result = subprocess.run(
@@ -168,12 +278,49 @@ class AptAdapter:
                 )
                 return
 
-            archive_origins = _parse_policy_origins(result.stdout)
+            policy_output = result.stdout
 
+            # Fast path: archive name → origin (works when archives are unambiguous).
+            archive_origins = _parse_policy_origins(policy_output)
+
+            unresolved: list[PendingUpgrade] = []
             for pkg in packages:
                 suite = suites.get(pkg.name)
                 if suite and suite in archive_origins:
                     pkg.apt_origin = archive_origins[suite]
+                else:
+                    unresolved.append(pkg)
+
+            if not unresolved:
+                return
+
+            # Fallback: per-package policy to resolve ambiguous archives.
+            # This happens when multiple repos share the same archive name
+            # (e.g. Debian + Raspberry Pi Foundation both use "bookworm").
+            source_origins = _parse_policy_source_origins(policy_output)
+            if not source_origins:
+                return
+
+            pkg_names = [p.name for p in unresolved]
+            result2 = subprocess.run(
+                ["apt-cache", "policy", *pkg_names],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={"LANG": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+            )
+            if result2.returncode != 0:
+                logger.debug(
+                    "apt-cache policy (per-package) failed (exit %d)",
+                    result2.returncode,
+                )
+                return
+
+            pkg_sources = _parse_per_package_policy(result2.stdout)
+            for pkg in unresolved:
+                source_key = pkg_sources.get(pkg.name)
+                if source_key and source_key in source_origins:
+                    pkg.apt_origin = source_origins[source_key]
         except Exception:
             logger.debug("Failed to enrich APT origins", exc_info=True)
 
@@ -381,6 +528,19 @@ class AptAdapter:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                # Many repos (e.g. kernel forks) don't use GitHub Releases.
+                logger.info(
+                    "No GitHub releases found for %s (%s/%s has no /releases/latest)",
+                    package_name, owner, repo,
+                )
+            else:
+                logger.warning(
+                    "GitHub release notes fetch failed for %s: %s",
+                    package_name, exc,
+                )
+            return ""
         except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
             logger.warning(
                 "GitHub release notes fetch failed for %s: %s", package_name, exc,

@@ -189,16 +189,19 @@ Test fixtures live in `tests/fixtures/`.
   approved flag, skipped_reason, risk_level, and recommendation. Do NOT
   use the generic `_to_serializable()` for decisions, as it would duplicate
   the full PendingUpgrade and AnalysisResult data already present above.
-- **APT origin enrichment.** The APT adapter runs `apt-cache policy` (one call,
-  no root needed) after `apt list --upgradable` to resolve each package's
-  repository origin label (e.g. `"Ubuntu"`, `"Debian"`).  The suite name from
-  `apt list` (e.g. `jammy-updates`) is mapped to an origin via the `release`
-  lines in the policy output.  The `_parse_policy_origins()` function in
-  `apt.py` only returns unambiguous mappings — if two repos share the same
-  archive name with different origins, that archive is omitted and the
-  package won't be auto-whitelisted.  Origin enrichment is fault-tolerant:
-  if `apt-cache policy` fails, packages simply get `apt_origin=None` and
-  origin-based whitelisting is silently skipped.
+- **APT origin enrichment.** The APT adapter runs `apt-cache policy` (no root
+  needed) after `apt list --upgradable` to resolve each package's repository
+  origin label (e.g. `"Ubuntu"`, `"Debian"`, `"Raspberry Pi Foundation"`).
+  The suite name from `apt list` (e.g. `jammy-updates`) is first mapped to
+  an origin via the archive → origin mapping from `_parse_policy_origins()`.
+  When this mapping is ambiguous (e.g. on Raspberry Pi OS where both Debian
+  and Raspberry Pi Foundation repos share the `bookworm` archive name), a
+  fallback runs `apt-cache policy <unresolved-packages>` to identify each
+  package's candidate repo URL, then cross-references it against the global
+  policy's release metadata via `_parse_policy_source_origins()`.  Origin
+  enrichment is fault-tolerant: if any `apt-cache policy` call fails,
+  packages simply get `apt_origin=None` and origin-based whitelisting is
+  silently skipped.
 - **APT origin-based whitelisting.** `WhitelistConfig.apt_trusted_origins` is
   a list of APT origin labels.  When set, `is_whitelisted()` in `whitelist.py`
   checks `package.apt_origin` against this list in addition to name-based
@@ -208,15 +211,21 @@ Test fixtures live in `tests/fixtures/`.
   by distribution:
   - **Debian:** `"Debian"`
   - **Ubuntu:** `"Ubuntu"`
-  - **Raspberry Pi OS:** `"Raspbian"` (for Raspberry Pi Foundation repos)
+  - **Raspberry Pi OS (Bookworm+):** `"Raspberry Pi Foundation"` (for packages from `archive.raspberrypi.com`)
+  - **Raspberry Pi OS (older):** `"Raspbian"` (for packages from `archive.raspbian.org`)
 
-  A Raspberry Pi OS user's config might include:
+  A Raspberry Pi OS (Bookworm) user's config might include:
   ```yaml
   whitelist:
     apt-trusted-origins:
       - Debian
-      - Raspbian
+      - Raspberry Pi Foundation
   ```
+  On Raspberry Pi OS, the Debian and RPi Foundation repos share the
+  same archive name (``bookworm``).  The APT adapter handles this by
+  falling back to per-package ``apt-cache policy`` when the global
+  archive → origin mapping is ambiguous (see ``_enrich_origins()`` in
+  ``apt.py``).
 - **APT upgrade streaming.** The APT adapter's `upgrade()` method does NOT
   capture stdout/stderr — output streams directly to the terminal so users
   can see apt's download/install progress and respond to interactive dpkg
@@ -234,12 +243,14 @@ Test fixtures live in `tests/fixtures/`.
 - **subprocess calls.** APT adapter uses `sudo` -- tests must mock `subprocess.run`.
   The APT adapter makes three subprocess calls in `list_upgradable()`:
   `apt list --upgradable`, `apt-cache policy`, and `apt show <all-packages>`
-  (plus an optional fourth `apt show` for source-package Homepage fallback).
-  Existing tests that mock a single return value still pass because
-  `_enrich_origins()` and `_enrich_metadata()` gracefully handle
-  unparseable output.  Tests using `side_effect` lists need mock values
-  for each expected call.  Note that `upgrade()` does NOT capture output
-  (streams to terminal), so its `CompletedProcess` has `None` for
+  (plus an optional fourth `apt show` for source-package Homepage fallback,
+  and an optional fifth `apt-cache policy <packages>` for the per-package
+  origin resolution fallback on systems with ambiguous archive names like
+  Raspberry Pi OS).  Existing tests that mock a single return value still
+  pass because `_enrich_origins()` and `_enrich_metadata()` gracefully
+  handle unparseable output.  Tests using `side_effect` lists need mock
+  values for each expected call.  Note that `upgrade()` does NOT capture
+  output (streams to terminal), so its `CompletedProcess` has `None` for
   stdout/stderr.
 - **Prompt injection.** Package names and changelog content are inserted into
   Claude prompts. The prompts instruct Claude to return JSON, but malicious

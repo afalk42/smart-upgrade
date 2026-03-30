@@ -263,6 +263,15 @@ class BrewAdapter:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                logger.info(
+                    "No GitHub releases found for %s (%s/%s has no /releases/latest)",
+                    package_name, owner, repo,
+                )
+            else:
+                logger.warning("GitHub release notes fetch failed for %s: %s", package_name, exc)
+            return ""
         except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
             logger.warning("GitHub release notes fetch failed for %s: %s", package_name, exc)
             return ""

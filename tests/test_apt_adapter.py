@@ -1,12 +1,18 @@
 """Tests for smart_upgrade.adapters.apt."""
 
 import json
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smart_upgrade.adapters.apt import AptAdapter, _parse_policy_origins
+from smart_upgrade.adapters.apt import (
+    AptAdapter,
+    _parse_per_package_policy,
+    _parse_policy_origins,
+    _parse_policy_source_origins,
+)
 from smart_upgrade.models import PackageSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -204,6 +210,94 @@ class TestParsePolicyOrigins:
         assert "stable" not in origins
 
 
+# ------------------------------------------------------------------
+# Raspberry Pi OS policy fixtures (ambiguous "bookworm" archive)
+# ------------------------------------------------------------------
+
+RPI_POLICY_OUTPUT = """\
+Package files:
+ 100 /var/lib/dpkg/status
+     release a=now
+ 500 http://deb.debian.org/debian bookworm/main arm64 Packages
+     release v=12,o=Debian,a=bookworm,n=bookworm,l=Debian,c=main
+     origin deb.debian.org
+ 500 http://deb.debian.org/debian-security bookworm-security/main arm64 Packages
+     release v=12,o=Debian,a=bookworm-security,n=bookworm,l=Debian-Security,c=main
+     origin deb.debian.org
+ 500 http://archive.raspberrypi.com/debian bookworm/main arm64 Packages
+     release o=Raspberry Pi Foundation,a=bookworm,n=bookworm,l=Raspberry Pi Foundation,c=main
+     origin archive.raspberrypi.com
+Pinned packages:
+"""
+
+RPI_PER_PKG_POLICY = """\
+libssl3:
+  Installed: 3.0.18-1~deb12u2+rpt1
+  Candidate: 3.0.19-1~deb12u1+rpt1
+  Version table:
+     3.0.19-1~deb12u1+rpt1 500
+        500 http://archive.raspberrypi.com/debian bookworm/main arm64 Packages
+ *** 3.0.18-1~deb12u2+rpt1 100
+        100 /var/lib/dpkg/status
+linux-headers-rpi-2712:
+  Installed: 1:6.12.62-1+rpt1~bookworm
+  Candidate: 1:6.12.75-1+rpt1~bookworm
+  Version table:
+     1:6.12.75-1+rpt1~bookworm 500
+        500 http://archive.raspberrypi.com/debian bookworm/main arm64 Packages
+ *** 1:6.12.62-1+rpt1~bookworm 100
+        100 /var/lib/dpkg/status
+imagemagick-6-common:
+  Installed: 8:6.9.11.60+dfsg-1.6+deb12u6
+  Candidate: 8:6.9.11.60+dfsg-1.6+deb12u7
+  Version table:
+     8:6.9.11.60+dfsg-1.6+deb12u7 500
+        500 http://deb.debian.org/debian-security bookworm-security/main arm64 Packages
+ *** 8:6.9.11.60+dfsg-1.6+deb12u6 100
+        100 /var/lib/dpkg/status
+"""
+
+
+class TestParsePolicySourceOrigins:
+    def test_maps_source_keys_to_origins(self):
+        origins = _parse_policy_source_origins(RPI_POLICY_OUTPUT)
+        assert origins["http://deb.debian.org/debian bookworm/main"] == "Debian"
+        assert origins["http://deb.debian.org/debian-security bookworm-security/main"] == "Debian"
+        assert origins["http://archive.raspberrypi.com/debian bookworm/main"] == "Raspberry Pi Foundation"
+
+    def test_empty_output(self):
+        assert _parse_policy_source_origins("") == {}
+
+    def test_skips_dpkg_status(self):
+        origins = _parse_policy_source_origins(RPI_POLICY_OUTPUT)
+        assert all(not k.startswith("/") for k in origins)
+
+
+class TestParsePerPackagePolicy:
+    def test_extracts_candidate_sources(self):
+        sources = _parse_per_package_policy(RPI_PER_PKG_POLICY)
+        assert sources["libssl3"] == "http://archive.raspberrypi.com/debian bookworm/main"
+        assert sources["linux-headers-rpi-2712"] == "http://archive.raspberrypi.com/debian bookworm/main"
+        assert sources["imagemagick-6-common"] == "http://deb.debian.org/debian-security bookworm-security/main"
+
+    def test_empty_output(self):
+        assert _parse_per_package_policy("") == {}
+
+    def test_handles_starred_candidate(self):
+        """When the candidate version is also the installed version (*** marker)."""
+        output = (
+            "pkg:\n"
+            "  Installed: 1.0-1\n"
+            "  Candidate: 1.0-1\n"
+            "  Version table:\n"
+            " *** 1.0-1 500\n"
+            "        500 http://example.com/repo bookworm/main arm64 Packages\n"
+            "        100 /var/lib/dpkg/status\n"
+        )
+        sources = _parse_per_package_policy(output)
+        assert sources["pkg"] == "http://example.com/repo bookworm/main"
+
+
 class TestEnrichOrigins:
     def test_sets_origin_on_packages(self):
         with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:
@@ -254,6 +348,48 @@ class TestEnrichOrigins:
             packages = adapter.list_upgradable()
 
         assert packages[0].apt_origin == "Ubuntu"
+
+    def test_fallback_resolves_ambiguous_archives(self):
+        """On RPi OS, 'bookworm' is shared by Debian and RPi Foundation repos.
+
+        The fast path drops the ambiguous archive.  The fallback uses
+        per-package ``apt-cache policy`` to resolve origins precisely.
+        """
+        rpi_apt_list = (
+            "Listing... Done\n"
+            "libssl3/bookworm 3.0.19-1~deb12u1+rpt1 arm64 "
+            "[upgradable from: 3.0.18-1~deb12u2+rpt1]\n"
+            "imagemagick-6-common/bookworm-security "
+            "8:6.9.11.60+dfsg-1.6+deb12u7 arm64 "
+            "[upgradable from: 8:6.9.11.60+dfsg-1.6+deb12u6]\n"
+        )
+        rpi_per_pkg = (
+            "libssl3:\n"
+            "  Installed: 3.0.18-1~deb12u2+rpt1\n"
+            "  Candidate: 3.0.19-1~deb12u1+rpt1\n"
+            "  Version table:\n"
+            "     3.0.19-1~deb12u1+rpt1 500\n"
+            "        500 http://archive.raspberrypi.com/debian bookworm/main arm64 Packages\n"
+            " *** 3.0.18-1~deb12u2+rpt1 100\n"
+            "        100 /var/lib/dpkg/status\n"
+        )
+        with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=rpi_apt_list, stderr=""),
+                MagicMock(returncode=0, stdout=RPI_POLICY_OUTPUT, stderr=""),
+                # Per-package policy — only called for unresolved packages
+                MagicMock(returncode=0, stdout=rpi_per_pkg, stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),  # apt show
+            ]
+
+            adapter = AptAdapter()
+            packages = adapter.list_upgradable()
+
+        pkg_map = {p.name: p for p in packages}
+        # libssl3 comes from RPi Foundation repo (resolved via fallback).
+        assert pkg_map["libssl3"].apt_origin == "Raspberry Pi Foundation"
+        # imagemagick comes from bookworm-security which is unambiguous.
+        assert pkg_map["imagemagick-6-common"].apt_origin == "Debian"
 
 
 class TestEnrichMetadata:
@@ -411,3 +547,26 @@ class TestGetChangelogFallback:
                 text = adapter.get_changelog("myapp")
 
         assert "Initial release" in text
+
+    def test_github_404_logs_info_not_warning(self):
+        """Repos without GitHub Releases (e.g. kernel forks) get a 404.
+
+        This should be INFO (not WARNING) since it's expected for many repos.
+        """
+        adapter = AptAdapter()
+        adapter._homepages["linux-headers-rpi"] = "https://github.com/raspberrypi/linux"
+
+        mock_changelog = MagicMock(returncode=1, stdout="", stderr="E: Failed")
+
+        with patch("smart_upgrade.adapters.apt.subprocess.run", return_value=mock_changelog):
+            with patch("smart_upgrade.adapters.apt.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = urllib.error.HTTPError(
+                    url="https://api.github.com/repos/raspberrypi/linux/releases/latest",
+                    code=404,
+                    msg="Not Found",
+                    hdrs={},
+                    fp=None,
+                )
+                text = adapter.get_changelog("linux-headers-rpi")
+
+        assert text == ""
