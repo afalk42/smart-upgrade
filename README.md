@@ -182,8 +182,13 @@ log_level: info
 log_directory: ~/.local/share/smart-upgrade/logs
 
 # Packages that skip deep analysis (Layer B + C)
-# Supports glob patterns (e.g., linux-image-*)
+# Supports glob patterns (e.g., linux-image-*) and origin-based auto-whitelisting
 whitelist:
+  # Trust all packages from official Ubuntu/Debian repos
+  apt-trusted-origins:
+    - Ubuntu
+    # - Debian          # uncomment on Debian systems
+  # Additional name-based patterns (for packages not covered by origin)
   apt:
     - coreutils
     - bash
@@ -261,6 +266,23 @@ whitelist:
   brew:
     - python@3.*       # matches python@3.12, python@3.13, etc.
 ```
+
+### Origin-based auto-whitelisting (APT)
+
+On Debian/Ubuntu systems, you can auto-whitelist all packages from trusted distribution repositories instead of listing every package by name. This uses APT's repository origin metadata (the `Origin` field from each repo's Release file) to distinguish official distro packages from third-party ones:
+
+```yaml
+whitelist:
+  apt-trusted-origins:
+    - Ubuntu           # all official Ubuntu repo packages
+    - Debian           # all official Debian repo packages
+```
+
+For example, on Ubuntu with 90 pending upgrades where 89 are from the official Ubuntu repos and 1 is from a third-party repo (e.g., Brave Browser), setting `apt-trusted-origins: [Ubuntu]` auto-whitelists the 89 Ubuntu packages while the third-party package still gets the full three-layer security analysis.
+
+This works by running `apt-cache policy` to map each package's APT archive to its repository origin label. If a package's origin matches one of your trusted origins, it is whitelisted. Name-based glob patterns and origin-based whitelisting can be used together -- a package is whitelisted if it matches either.
+
+Use `smart-upgrade --show-whitelist` to see both your name patterns and trusted origins.
 
 ## What This Tool Aims To Protect Against
 

@@ -34,7 +34,7 @@ cli.py (entry point, orchestration)
        -> analysis/claude_invoker.py (claude CLI wrapper)
        -> analysis/threat_intel.py (Brave/OSV/NVD API clients)
        -> analysis/changelog.py (changelog retrieval)
-  -> whitelist.py (glob-based package whitelisting)
+  -> whitelist.py (glob-based + origin-based package whitelisting)
   -> audit.py (YAML audit log writer)
   -> ui.py (rich-based terminal output)
 ```
@@ -126,13 +126,13 @@ Test fixtures live in `tests/fixtures/`.
 | `config.py` | Config loading | YAML from `~/.config/smart-upgrade/config.yaml`, env vars for API keys |
 | `models.py` | Data structures | All dataclasses and enums live here |
 | `platform_detect.py` | OS detection | Reads `/etc/os-release` on Linux, `platform.system()` for macOS |
-| `adapters/apt.py` | APT wrapper | Parses `apt list --upgradable`, uses `sudo` internally |
+| `adapters/apt.py` | APT wrapper | Parses `apt list --upgradable`, enriches with origin info via `apt-cache policy`, uses `sudo` internally |
 | `adapters/brew.py` | Brew wrapper | Parses `brew outdated --json=v2`, enriches metadata via `brew info`, fetches GitHub release notes for changelogs |
 | `analysis/engine.py` | Analysis orchestrator | Runs Layers A/B/C, merges results |
 | `analysis/claude_invoker.py` | Claude CLI wrapper | `claude -p --model <model>`, retry logic, JSON parsing |
 | `analysis/threat_intel.py` | Threat intel clients | Brave Search, OSV.dev, NVD -- all via `urllib.request`. OSV only for valid ecosystems (Debian, PyPI, etc. -- not Homebrew) |
 | `analysis/changelog.py` | Changelog retrieval | Delegates to adapter's `get_changelog()` method |
-| `whitelist.py` | Whitelist matching | `fnmatch` glob patterns, per-package-manager lists |
+| `whitelist.py` | Whitelist matching | `fnmatch` glob patterns, per-package-manager lists, APT origin-based auto-whitelisting |
 | `audit.py` | Audit logging | YAML files in `~/.local/share/smart-upgrade/logs/`, 0600 permissions. Decisions are serialized compactly (name + approved + reason only, no duplicated analysis data) |
 | `ui.py` | Terminal output | All `rich` usage is here -- tables, panels, progress, prompts |
 
@@ -171,7 +171,27 @@ Test fixtures live in `tests/fixtures/`.
   approved flag, skipped_reason, risk_level, and recommendation. Do NOT
   use the generic `_to_serializable()` for decisions, as it would duplicate
   the full PendingUpgrade and AnalysisResult data already present above.
+- **APT origin enrichment.** The APT adapter runs `apt-cache policy` (one call,
+  no root needed) after `apt list --upgradable` to resolve each package's
+  repository origin label (e.g. `"Ubuntu"`, `"Debian"`).  The suite name from
+  `apt list` (e.g. `jammy-updates`) is mapped to an origin via the `release`
+  lines in the policy output.  The `_parse_policy_origins()` function in
+  `apt.py` only returns unambiguous mappings — if two repos share the same
+  archive name with different origins, that archive is omitted and the
+  package won't be auto-whitelisted.  Origin enrichment is fault-tolerant:
+  if `apt-cache policy` fails, packages simply get `apt_origin=None` and
+  origin-based whitelisting is silently skipped.
+- **APT origin-based whitelisting.** `WhitelistConfig.apt_trusted_origins` is
+  a list of APT origin labels.  When set, `is_whitelisted()` in `whitelist.py`
+  checks `package.apt_origin` against this list in addition to name-based
+  glob patterns.  The config key is `apt-trusted-origins` (with dashes) in
+  YAML, accepting `apt_trusted_origins` (with underscores) as a fallback,
+  mirroring the `brew-cask` / `brew_cask` convention.
 - **subprocess calls.** APT adapter uses `sudo` -- tests must mock `subprocess.run`.
+  The APT adapter now makes two subprocess calls in `list_upgradable()`:
+  `apt list --upgradable` and `apt-cache policy`.  Existing tests that mock
+  a single return value still pass because `_enrich_origins()` gracefully
+  handles unparseable policy output (empty origin map, no crash).
 - **Prompt injection.** Package names and changelog content are inserted into
   Claude prompts. The prompts instruct Claude to return JSON, but malicious
   content in changelogs could theoretically attempt prompt injection. The

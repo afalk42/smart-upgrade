@@ -57,9 +57,16 @@ class TimeoutsConfig:
 
 @dataclass
 class WhitelistConfig:
-    """Per-package-manager whitelists (lists of glob patterns)."""
+    """Per-package-manager whitelists (lists of glob patterns).
+
+    ``apt_trusted_origins`` enables origin-based auto-whitelisting for APT
+    packages.  When set, packages whose repository origin label matches one
+    of the listed values (e.g. ``"Ubuntu"``, ``"Debian"``) are automatically
+    whitelisted, skipping deep analysis (Layers B/C).
+    """
 
     apt: list[str] = field(default_factory=list)
+    apt_trusted_origins: list[str] = field(default_factory=list)
     brew: list[str] = field(default_factory=list)
     brew_cask: list[str] = field(default_factory=list)
 
@@ -132,6 +139,10 @@ def load_config(path: Path | None = None) -> Config:
     wl_raw = raw.get("whitelist", {}) or {}
     whitelist = WhitelistConfig(
         apt=wl_raw.get("apt", []) or [],
+        apt_trusted_origins=(
+            wl_raw.get("apt-trusted-origins", wl_raw.get("apt_trusted_origins", []))
+            or []
+        ),
         brew=wl_raw.get("brew", []) or [],
         brew_cask=wl_raw.get("brew-cask", wl_raw.get("brew_cask", [])) or [],
     )

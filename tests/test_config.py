@@ -60,6 +60,31 @@ class TestLoadConfigFromFile:
         assert "curl" in cfg.whitelist.brew
         assert "firefox" in cfg.whitelist.brew_cask
 
+    def test_loads_apt_trusted_origins(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(textwrap.dedent("""\
+            whitelist:
+              apt-trusted-origins:
+                - Ubuntu
+                - Debian
+        """))
+        cfg = load_config(config_file)
+        assert cfg.whitelist.apt_trusted_origins == ["Ubuntu", "Debian"]
+
+    def test_loads_apt_trusted_origins_underscore(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(textwrap.dedent("""\
+            whitelist:
+              apt_trusted_origins:
+                - Ubuntu
+        """))
+        cfg = load_config(config_file)
+        assert cfg.whitelist.apt_trusted_origins == ["Ubuntu"]
+
+    def test_default_apt_trusted_origins(self, tmp_path):
+        cfg = load_config(tmp_path / "nonexistent.yaml")
+        assert cfg.whitelist.apt_trusted_origins == []
+
     def test_loads_threat_intel(self, tmp_path):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(textwrap.dedent("""\

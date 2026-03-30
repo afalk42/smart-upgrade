@@ -18,9 +18,50 @@ logger = logging.getLogger(__name__)
 # Example line from `apt list --upgradable`:
 #   curl/jammy-updates 7.81.0-1ubuntu1.16 amd64 [upgradable from: 7.81.0-1ubuntu1.15]
 _UPGRADABLE_RE = re.compile(
-    r"^(?P<name>[^/]+)/\S+\s+(?P<new>\S+)\s+\S+"
+    r"^(?P<name>[^/]+)/(?P<suites>\S+)\s+(?P<new>\S+)\s+\S+"
     r"\s+\[upgradable from:\s+(?P<old>\S+)\]",
 )
+
+# Matches the "release" line in `apt-cache policy` output, e.g.:
+#   release v=22.04,o=Ubuntu,a=jammy-updates,n=jammy,l=Ubuntu,c=main,b=amd64
+_RELEASE_LINE_RE = re.compile(r"^\s+release\s+(.+)$")
+
+
+def _parse_policy_origins(policy_output: str) -> dict[str, str]:
+    """Parse ``apt-cache policy`` output to map archive names to origin labels.
+
+    Returns a dict mapping archive name (e.g. ``"jammy-updates"``) to origin
+    label (e.g. ``"Ubuntu"``).  Only unambiguous mappings are returned — if
+    two repositories share the same archive name but have different origins,
+    that archive is omitted.
+    """
+    archive_origins: dict[str, set[str]] = {}
+
+    for line in policy_output.splitlines():
+        m = _RELEASE_LINE_RE.match(line)
+        if not m:
+            continue
+
+        release_info = m.group(1)
+        archive: str | None = None
+        origin: str | None = None
+
+        for field in release_info.split(","):
+            key, _, value = field.strip().partition("=")
+            if key == "o" and value:
+                origin = value
+            elif key == "a" and value:
+                archive = value
+
+        if archive and origin and archive != "now":
+            archive_origins.setdefault(archive, set()).add(origin)
+
+    # Only return unambiguous mappings (one origin per archive).
+    return {
+        archive: next(iter(origins))
+        for archive, origins in archive_origins.items()
+        if len(origins) == 1
+    }
 
 
 class AptAdapter:
@@ -67,18 +108,62 @@ class AptAdapter:
             )
 
         upgrades: list[PendingUpgrade] = []
+        suites: dict[str, str] = {}
         for line in result.stdout.splitlines():
             m = _UPGRADABLE_RE.match(line)
             if m:
+                name = m.group("name")
                 upgrades.append(
                     PendingUpgrade(
-                        name=m.group("name"),
+                        name=name,
                         current_version=m.group("old"),
                         new_version=m.group("new"),
                         source=PackageSource.APT,
                     )
                 )
+                # Take the first suite (primary source) from comma-separated list.
+                suites[name] = m.group("suites").split(",")[0]
+
+        self._enrich_origins(upgrades, suites)
         return upgrades
+
+    # ------------------------------------------------------------------
+    # Origin enrichment
+    # ------------------------------------------------------------------
+
+    def _enrich_origins(
+        self,
+        packages: list[PendingUpgrade],
+        suites: dict[str, str],
+    ) -> None:
+        """Set :attr:`apt_origin` on each package by resolving suite → origin.
+
+        Runs ``apt-cache policy`` once to build a mapping from APT archive
+        names to repository origin labels (e.g. ``"Ubuntu"``, ``"Debian"``).
+        """
+        try:
+            result = subprocess.run(
+                ["apt-cache", "policy"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={"LANG": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+            )
+            if result.returncode != 0:
+                logger.debug(
+                    "apt-cache policy failed (exit %d), skipping origin enrichment",
+                    result.returncode,
+                )
+                return
+
+            archive_origins = _parse_policy_origins(result.stdout)
+
+            for pkg in packages:
+                suite = suites.get(pkg.name)
+                if suite and suite in archive_origins:
+                    pkg.apt_origin = archive_origins[suite]
+        except Exception:
+            logger.debug("Failed to enrich APT origins", exc_info=True)
 
     # ------------------------------------------------------------------
     # Upgrade

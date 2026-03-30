@@ -21,11 +21,20 @@ def _matches_any(name: str, patterns: list[str]) -> bool:
 def is_whitelisted(package: PendingUpgrade, whitelist: WhitelistConfig) -> bool:
     """Check whether *package* appears on the whitelist.
 
-    Matching uses :func:`fnmatch.fnmatch`, so patterns like
-    ``linux-image-*`` or ``python@3.*`` work as expected.
+    Matching uses :func:`fnmatch.fnmatch` for name patterns and
+    origin-based matching for APT packages whose repository origin
+    (e.g. ``"Ubuntu"``, ``"Debian"``) is in ``apt_trusted_origins``.
     """
     if package.source == PackageSource.APT:
-        return _matches_any(package.name, whitelist.apt)
+        if _matches_any(package.name, whitelist.apt):
+            return True
+        if (
+            whitelist.apt_trusted_origins
+            and package.apt_origin
+            and package.apt_origin in whitelist.apt_trusted_origins
+        ):
+            return True
+        return False
     elif package.source == PackageSource.BREW_FORMULA:
         return _matches_any(package.name, whitelist.brew)
     elif package.source == PackageSource.BREW_CASK:
@@ -63,6 +72,8 @@ def format_whitelist_display(whitelist: WhitelistConfig) -> dict[str, list[str]]
     result: dict[str, list[str]] = {}
     if whitelist.apt:
         result["APT"] = sorted(whitelist.apt)
+    if whitelist.apt_trusted_origins:
+        result["APT Trusted Origins"] = sorted(whitelist.apt_trusted_origins)
     if whitelist.brew:
         result["Homebrew Formulae"] = sorted(whitelist.brew)
     if whitelist.brew_cask:

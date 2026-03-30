@@ -82,6 +82,7 @@ class PendingUpgrade:
     maintainer: str | None = None
     homepage: str | None = None
     source_repo: str | None = None
+    apt_origin: str | None = None
 
 
 @dataclass
