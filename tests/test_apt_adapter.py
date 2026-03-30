@@ -1,5 +1,6 @@
 """Tests for smart_upgrade.adapters.apt."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -151,6 +152,23 @@ openssl/jammy-security 3.0.2-0ubuntu1.16 amd64 [upgradable from: 3.0.2-0ubuntu1.
 brave-browser/stable 1.88.136 amd64 [upgradable from: 1.88.127]
 """
 
+APT_SHOW_MIXED = """\
+Package: curl
+Version: 7.81.0-1ubuntu1.16
+Maintainer: Ubuntu Developers <ubuntu-devel@lists.ubuntu.com>
+Homepage: https://curl.se
+
+Package: openssl
+Version: 3.0.2-0ubuntu1.16
+Maintainer: Ubuntu Developers <ubuntu-devel@lists.ubuntu.com>
+Homepage: https://www.openssl.org/
+
+Package: brave-browser
+Version: 1.88.136
+Maintainer: Brave Software <support@brave.com>
+Homepage: https://brave.com
+"""
+
 
 class TestParsePolicyOrigins:
     def test_parses_ubuntu_origins(self):
@@ -187,6 +205,7 @@ class TestEnrichOrigins:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout=APT_LIST_MIXED, stderr=""),
                 MagicMock(returncode=0, stdout=POLICY_OUTPUT, stderr=""),
+                MagicMock(returncode=0, stdout=APT_SHOW_MIXED, stderr=""),
             ]
 
             adapter = AptAdapter()
@@ -202,6 +221,7 @@ class TestEnrichOrigins:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout=APT_LIST_MIXED, stderr=""),
                 MagicMock(returncode=1, stdout="", stderr="error"),
+                MagicMock(returncode=0, stdout="", stderr=""),
             ]
 
             adapter = AptAdapter()
@@ -222,9 +242,135 @@ class TestEnrichOrigins:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout=apt_output, stderr=""),
                 MagicMock(returncode=0, stdout=POLICY_OUTPUT, stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
             ]
 
             adapter = AptAdapter()
             packages = adapter.list_upgradable()
 
         assert packages[0].apt_origin == "Ubuntu"
+
+
+class TestEnrichMetadata:
+    def test_populates_maintainer_and_homepage(self):
+        with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=APT_LIST_MIXED, stderr=""),
+                MagicMock(returncode=0, stdout=POLICY_OUTPUT, stderr=""),
+                MagicMock(returncode=0, stdout=APT_SHOW_MIXED, stderr=""),
+            ]
+
+            adapter = AptAdapter()
+            packages = adapter.list_upgradable()
+
+        pkg_map = {p.name: p for p in packages}
+        assert pkg_map["curl"].maintainer == "Ubuntu Developers <ubuntu-devel@lists.ubuntu.com>"
+        assert pkg_map["curl"].homepage == "https://curl.se"
+        assert pkg_map["brave-browser"].maintainer == "Brave Software <support@brave.com>"
+        assert pkg_map["brave-browser"].homepage == "https://brave.com"
+
+    def test_apt_show_failure_is_graceful(self):
+        with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=APT_LIST_MIXED, stderr=""),
+                MagicMock(returncode=0, stdout=POLICY_OUTPUT, stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="error"),
+            ]
+
+            adapter = AptAdapter()
+            packages = adapter.list_upgradable()
+
+        # Packages are returned, just without metadata.
+        assert len(packages) == 3
+        assert all(p.maintainer is None for p in packages)
+        assert all(p.homepage is None for p in packages)
+
+    def test_caches_homepages_for_changelog(self):
+        with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=APT_LIST_MIXED, stderr=""),
+                MagicMock(returncode=0, stdout=POLICY_OUTPUT, stderr=""),
+                MagicMock(returncode=0, stdout=APT_SHOW_MIXED, stderr=""),
+            ]
+
+            adapter = AptAdapter()
+            adapter.list_upgradable()
+
+        assert adapter._homepages["curl"] == "https://curl.se"
+        assert adapter._homepages["brave-browser"] == "https://brave.com"
+
+
+class TestGetChangelogFallback:
+    def test_apt_changelog_success(self):
+        """When apt changelog works, use it directly."""
+        with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = "curl (7.81.0) jammy; urgency=medium\n\n  * Fix bug\n"
+
+            adapter = AptAdapter()
+            text = adapter.get_changelog("curl")
+
+        assert "Fix bug" in text
+
+    def test_falls_back_to_github(self):
+        """When apt changelog fails and homepage is GitHub, fetch release notes."""
+        adapter = AptAdapter()
+        adapter._homepages["myapp"] = "https://github.com/owner/myapp"
+
+        mock_changelog = MagicMock(returncode=1, stdout="", stderr="E: Failed")
+        github_response = json.dumps({
+            "tag_name": "v2.0",
+            "name": "Release v2.0",
+            "body": "## What's new\n\n- Feature X\n- Bug fix Y",
+        }).encode("utf-8")
+
+        with patch("smart_upgrade.adapters.apt.subprocess.run", return_value=mock_changelog):
+            with patch("smart_upgrade.adapters.apt.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.return_value.__enter__ = lambda s: s
+                mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
+                mock_urlopen.return_value.read.return_value = github_response
+
+                text = adapter.get_changelog("myapp")
+
+        assert "Release v2.0" in text
+        assert "Feature X" in text
+
+    def test_no_github_returns_empty(self):
+        """When apt changelog fails and homepage is not GitHub, return empty."""
+        adapter = AptAdapter()
+        adapter._homepages["brave-browser"] = "https://brave.com"
+
+        with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.stderr = "E: Failed"
+
+            text = adapter.get_changelog("brave-browser")
+
+        assert text == ""
+
+    def test_no_cached_homepage_calls_get_package_info(self):
+        """When homepage is not cached, falls back to get_package_info()."""
+        adapter = AptAdapter()
+        # No cached homepage — will call get_package_info
+
+        show_output = "Package: myapp\nHomepage: https://github.com/owner/myapp\n"
+        github_response = json.dumps({
+            "tag_name": "v1.0",
+            "name": "v1.0",
+            "body": "Initial release",
+        }).encode("utf-8")
+
+        with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=1, stdout="", stderr="E: Failed"),  # apt changelog
+                MagicMock(returncode=0, stdout=show_output, stderr=""),  # apt show
+            ]
+            with patch("smart_upgrade.adapters.apt.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.return_value.__enter__ = lambda s: s
+                mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
+                mock_urlopen.return_value.read.return_value = github_response
+
+                text = adapter.get_changelog("myapp")
+
+        assert "Initial release" in text

@@ -126,7 +126,7 @@ Test fixtures live in `tests/fixtures/`.
 | `config.py` | Config loading | YAML from `~/.config/smart-upgrade/config.yaml`, env vars for API keys |
 | `models.py` | Data structures | All dataclasses and enums live here |
 | `platform_detect.py` | OS detection | Reads `/etc/os-release` on Linux, `platform.system()` for macOS |
-| `adapters/apt.py` | APT wrapper | Parses `apt list --upgradable`, enriches with origin info via `apt-cache policy`, uses `sudo` internally |
+| `adapters/apt.py` | APT wrapper | Parses `apt list --upgradable`, enriches with origin via `apt-cache policy` and metadata via `apt show` (batched), changelog with GitHub fallback, uses `sudo` internally |
 | `adapters/brew.py` | Brew wrapper | Parses `brew outdated --json=v2`, enriches metadata via `brew info`, fetches GitHub release notes for changelogs |
 | `analysis/engine.py` | Analysis orchestrator | Runs Layers A/B/C, merges results |
 | `analysis/claude_invoker.py` | Claude CLI wrapper | `claude -p --model <model>`, retry logic, JSON parsing |
@@ -166,6 +166,18 @@ Test fixtures live in `tests/fixtures/`.
   homepage, source URL, or tap info. The brew adapter runs a separate
   `brew info --json=v2 <all-packages>` call (batched, single invocation)
   to populate these fields on each `PendingUpgrade`.
+- **APT metadata enrichment.** Similarly, `apt list --upgradable` does NOT
+  include maintainer, homepage, or source info.  The APT adapter runs
+  `apt show <all-packages>` (batched, single invocation) to populate
+  `maintainer` and `homepage` on each `PendingUpgrade`.  Homepages are
+  also cached in `self._homepages` for use by the changelog GitHub fallback.
+- **APT changelog retrieval.** `apt changelog` only works for packages in
+  official Debian/Ubuntu repos.  For third-party packages (e.g. Brave
+  Browser from its own APT repo), it fails.  The APT adapter handles this
+  by falling back to GitHub release notes when the package's homepage URL
+  points to GitHub.  If neither source is available, the changelog is
+  skipped with an INFO-level log (not a WARNING).  This mirrors the
+  Homebrew adapter's approach via `_fetch_github_release_notes()`.
 - **Audit log deduplication.** The `decisions` section of the audit log is
   serialized compactly via `_serialize_decisions()` — only package name,
   approved flag, skipped_reason, risk_level, and recommendation. Do NOT
@@ -188,10 +200,12 @@ Test fixtures live in `tests/fixtures/`.
   YAML, accepting `apt_trusted_origins` (with underscores) as a fallback,
   mirroring the `brew-cask` / `brew_cask` convention.
 - **subprocess calls.** APT adapter uses `sudo` -- tests must mock `subprocess.run`.
-  The APT adapter now makes two subprocess calls in `list_upgradable()`:
-  `apt list --upgradable` and `apt-cache policy`.  Existing tests that mock
-  a single return value still pass because `_enrich_origins()` gracefully
-  handles unparseable policy output (empty origin map, no crash).
+  The APT adapter makes three subprocess calls in `list_upgradable()`:
+  `apt list --upgradable`, `apt-cache policy`, and `apt show <all-packages>`.
+  Existing tests that mock a single return value still pass because
+  `_enrich_origins()` and `_enrich_metadata()` gracefully handle
+  unparseable output.  Tests using `side_effect` lists need all three
+  mock values.
 - **Prompt injection.** Package names and changelog content are inserted into
   Claude prompts. The prompts instruct Claude to return JSON, but malicious
   content in changelogs could theoretically attempt prompt injection. The

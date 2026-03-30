@@ -7,9 +7,12 @@ as a regular user.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
+import urllib.error
+import urllib.request
 
 from smart_upgrade.models import PackageSource, PendingUpgrade
 
@@ -66,6 +69,14 @@ def _parse_policy_origins(policy_output: str) -> dict[str, str]:
 
 class AptAdapter:
     """Package-manager adapter wrapping the ``apt`` CLI."""
+
+    # Matches "https://github.com/<owner>/<repo>/..." URLs.
+    _GITHUB_RE = re.compile(r"https://github\.com/([^/]+)/([^/]+)")
+
+    def __init__(self) -> None:
+        # Cache of package name → homepage URL, populated by _enrich_metadata()
+        # and used by get_changelog() for the GitHub release notes fallback.
+        self._homepages: dict[str, str] = {}
 
     @property
     def name(self) -> str:
@@ -125,6 +136,7 @@ class AptAdapter:
                 suites[name] = m.group("suites").split(",")[0]
 
         self._enrich_origins(upgrades, suites)
+        self._enrich_metadata(upgrades)
         return upgrades
 
     # ------------------------------------------------------------------
@@ -164,6 +176,60 @@ class AptAdapter:
                     pkg.apt_origin = archive_origins[suite]
         except Exception:
             logger.debug("Failed to enrich APT origins", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Metadata enrichment
+    # ------------------------------------------------------------------
+
+    def _enrich_metadata(self, packages: list[PendingUpgrade]) -> None:
+        """Fill in maintainer and homepage via a batched ``apt show`` call.
+
+        Similar to the Homebrew adapter's ``_enrich_metadata()`` which uses
+        ``brew info --json=v2``.  Homepages are also cached for use by
+        :meth:`get_changelog`'s GitHub release notes fallback.
+        """
+        if not packages:
+            return
+        try:
+            names = [p.name for p in packages]
+            result = subprocess.run(
+                ["apt", "show", *names],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={"LANG": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+            )
+
+            # Parse whatever output we got — apt show may return non-zero
+            # when some packages are unknown but still prints data for others.
+            pkg_info: dict[str, dict[str, str]] = {}
+            current_name: str | None = None
+
+            for line in result.stdout.splitlines():
+                if line.startswith("Package:"):
+                    current_name = line.split(":", 1)[1].strip()
+                    pkg_info.setdefault(current_name, {})
+                elif current_name:
+                    if line.startswith("Maintainer:"):
+                        pkg_info[current_name].setdefault(
+                            "maintainer", line.split(":", 1)[1].strip(),
+                        )
+                    elif line.startswith("Homepage:"):
+                        pkg_info[current_name].setdefault(
+                            "homepage", line.split(":", 1)[1].strip(),
+                        )
+
+            for pkg in packages:
+                info = pkg_info.get(pkg.name, {})
+                if info.get("maintainer") and pkg.maintainer is None:
+                    pkg.maintainer = info["maintainer"]
+                if info.get("homepage") and pkg.homepage is None:
+                    pkg.homepage = info["homepage"]
+                # Cache homepage for changelog fallback.
+                if info.get("homepage"):
+                    self._homepages[pkg.name] = info["homepage"]
+        except Exception:
+            logger.debug("Failed to enrich APT metadata", exc_info=True)
 
     # ------------------------------------------------------------------
     # Upgrade
@@ -215,9 +281,15 @@ class AptAdapter:
     # ------------------------------------------------------------------
 
     def get_changelog(self, package_name: str) -> str:
-        """Retrieve the Debian changelog for a package via ``apt changelog``.
+        """Retrieve changelog text for a package.
 
-        Returns the changelog text, or an empty string on failure.
+        Strategy:
+
+        1. Try ``apt changelog`` — works for official Debian/Ubuntu packages.
+        2. If that fails (typical for third-party packages), check whether
+           the package's homepage is on GitHub and fetch release notes via
+           the GitHub API (same approach as the Homebrew adapter).
+        3. Return an empty string if neither source is available.
         """
         result = subprocess.run(
             ["apt", "changelog", package_name],
@@ -225,9 +297,68 @@ class AptAdapter:
             text=True,
             check=False,
         )
-        if result.returncode != 0:
-            logger.warning("Could not retrieve changelog for %s: %s", package_name, result.stderr.strip())
+        if result.returncode == 0 and result.stdout.strip():
+            # Return only the first ~200 lines to keep prompts manageable.
+            lines = result.stdout.splitlines()
+            return "\n".join(lines[:200])
+
+        # apt changelog failed — try GitHub release notes as fallback.
+        logger.debug(
+            "apt changelog unavailable for %s, trying GitHub fallback",
+            package_name,
+        )
+        homepage = self._homepages.get(package_name, "")
+        if not homepage:
+            info = self.get_package_info(package_name)
+            homepage = info.get("homepage", "")
+
+        m = self._GITHUB_RE.match(homepage)
+        if m:
+            owner, repo = m.group(1), m.group(2)
+            return self._fetch_github_release_notes(owner, repo, package_name)
+
+        logger.info(
+            "No changelog available for %s (not in APT repos and no GitHub homepage)",
+            package_name,
+        )
+        return ""
+
+    def _fetch_github_release_notes(
+        self, owner: str, repo: str, package_name: str,
+    ) -> str:
+        """Fetch the latest release notes from GitHub for *owner/repo*.
+
+        Tries the ``/releases/latest`` endpoint.  Returns the release body
+        (Markdown) or an empty string on failure.
+        """
+        url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "smart-upgrade",
+        }
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
+            logger.warning(
+                "GitHub release notes fetch failed for %s: %s", package_name, exc,
+            )
             return ""
-        # Return only the first ~200 lines to keep prompts manageable.
-        lines = result.stdout.splitlines()
-        return "\n".join(lines[:200])
+
+        tag = data.get("tag_name", "")
+        name = data.get("name", "")
+        body = data.get("body", "")
+
+        if not body:
+            logger.info(
+                "GitHub release %s for %s has no body text", tag, package_name,
+            )
+            return ""
+
+        header = f"GitHub Release: {name or tag}\n\n"
+        max_len = 4000
+        if len(body) > max_len:
+            body = body[:max_len] + "\n\n... (truncated)"
+
+        return header + body
