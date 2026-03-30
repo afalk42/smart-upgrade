@@ -1,4 +1,4 @@
-"""APT adapter for Debian / Ubuntu systems.
+"""APT adapter for Debian-based systems (Debian, Ubuntu, Raspberry Pi OS, etc.).
 
 All commands that require root are prefixed with ``sudo`` — the tool itself
 is never run as root.  ``apt list --upgradable`` and ``apt show`` work fine

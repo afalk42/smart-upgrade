@@ -43,6 +43,32 @@ class TestDetectPlatform:
     @patch("smart_upgrade.platform_detect.platform.system", return_value="Linux")
     @patch(
         "smart_upgrade.platform_detect._read_os_release",
+        return_value={
+            "ID": "raspbian",
+            "ID_LIKE": "debian",
+            "PRETTY_NAME": "Raspbian GNU/Linux 11 (bullseye)",
+        },
+    )
+    def test_raspberry_pi_os_old(self, _mock_release, _mock_system):
+        """Older Raspberry Pi OS (Bullseye and earlier) uses ID=raspbian."""
+        assert detect_platform() == "linux-apt"
+
+    @patch("smart_upgrade.platform_detect.platform.system", return_value="Linux")
+    @patch(
+        "smart_upgrade.platform_detect._read_os_release",
+        return_value={
+            "ID": "debian",
+            "PRETTY_NAME": "Debian GNU/Linux 12 (bookworm)",
+            "VERSION_CODENAME": "bookworm",
+        },
+    )
+    def test_raspberry_pi_os_new(self, _mock_release, _mock_system):
+        """Newer Raspberry Pi OS (Bookworm+) uses ID=debian directly."""
+        assert detect_platform() == "linux-apt"
+
+    @patch("smart_upgrade.platform_detect.platform.system", return_value="Linux")
+    @patch(
+        "smart_upgrade.platform_detect._read_os_release",
         return_value={"ID": "fedora", "PRETTY_NAME": "Fedora 40"},
     )
     def test_unsupported_linux(self, _mock_release, _mock_system):

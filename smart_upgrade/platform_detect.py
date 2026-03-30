@@ -2,7 +2,11 @@
 
 Supported platforms:
 - **macOS**: Uses Homebrew (formulae + casks).
-- **Linux (Debian/Ubuntu)**: Uses APT.
+- **Linux (Debian/Ubuntu/Raspberry Pi OS)**: Uses APT.
+
+Raspberry Pi OS (formerly Raspbian) is Debian-based and uses APT.  It is
+detected via ``ID_LIKE=debian`` in ``/etc/os-release``, the same path as
+any other Debian derivative.
 
 On unsupported platforms the module raises ``UnsupportedPlatformError`` with a
 clear message listing what *is* supported.
@@ -38,7 +42,8 @@ def detect_platform() -> str:
     Raises
     ------
     UnsupportedPlatformError
-        If the current OS is not macOS or Debian/Ubuntu Linux.
+        If the current OS is not macOS or a Debian-based Linux
+        (Debian, Ubuntu, Raspberry Pi OS, and other derivatives).
     """
     system = platform.system()
 
@@ -55,13 +60,15 @@ def detect_platform() -> str:
 
         raise UnsupportedPlatformError(
             f"Unsupported Linux distribution: {os_release.get('PRETTY_NAME', distro_id or 'unknown')}.\n"
-            "smart-upgrade currently supports Debian and Ubuntu.\n"
+            "smart-upgrade currently supports Debian, Ubuntu, Raspberry Pi OS,\n"
+            "and other Debian-based distributions.\n"
             "Future versions may add Fedora/RHEL (dnf) support."
         )
 
     raise UnsupportedPlatformError(
         f"Unsupported operating system: {system}.\n"
-        "smart-upgrade supports macOS (Homebrew) and Debian/Ubuntu Linux (APT)."
+        "smart-upgrade supports macOS (Homebrew) and Debian-based Linux (APT),\n"
+        "including Debian, Ubuntu, and Raspberry Pi OS."
     )
 
 

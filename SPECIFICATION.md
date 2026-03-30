@@ -21,10 +21,13 @@ Open-source supply-chain attacks are accelerating. Threat actors compromise main
 
 ## 3. Supported Platforms & Package Managers
 
-| Platform        | Package Manager | Scope                          |
-| --------------- | --------------- | ------------------------------ |
-| macOS           | Homebrew        | Formulae and Casks             |
-| Debian / Ubuntu | APT             | `.deb` packages via `apt`      |
+| Platform                      | Package Manager | Scope                          |
+| ----------------------------- | --------------- | ------------------------------ |
+| macOS                         | Homebrew        | Formulae and Casks             |
+| Debian / Ubuntu               | APT             | `.deb` packages via `apt`      |
+| Raspberry Pi OS (+ other Debian derivatives) | APT | `.deb` packages via `apt`  |
+
+Raspberry Pi OS (formerly Raspbian) is Debian-based and is detected automatically via the `ID_LIKE=debian` field in `/etc/os-release`.  The APT adapter works identically on ARM (`armhf`, `arm64`) and x86 architectures.
 
 Future versions may add support for `dnf`/`yum` (Fedora/RHEL), Snap, Flatpak, and language-level package managers (pip, npm, cargo).
 
@@ -69,7 +72,7 @@ This design avoids the pitfalls of running Python inside `sudo` (which would bre
 
 Detects the current operating system and selects the appropriate package manager adapter.
 
-- Uses `platform.system()` and, on Linux, reads `/etc/os-release` to confirm Debian/Ubuntu.
+- Uses `platform.system()` and, on Linux, reads `/etc/os-release` to confirm a Debian-based distribution (Debian, Ubuntu, Raspberry Pi OS, etc.).
 - Raises a clear error on unsupported platforms.
 
 #### 4.1.2 Package Manager Adapters

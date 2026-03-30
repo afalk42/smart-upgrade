@@ -16,6 +16,8 @@ before making architectural changes.
 
 ## Tech Stack
 
+- **Supported platforms:** macOS (Homebrew), Debian, Ubuntu, Raspberry Pi OS,
+  and other Debian-based distributions (APT)
 - **Language:** Python 3.10+ (uses `from __future__ import annotations`)
 - **Dependencies (runtime):** `pyyaml`, `rich` -- deliberately minimal
 - **Dependencies (dev):** `pytest`, `pytest-mock`
@@ -202,7 +204,19 @@ Test fixtures live in `tests/fixtures/`.
   checks `package.apt_origin` against this list in addition to name-based
   glob patterns.  The config key is `apt-trusted-origins` (with dashes) in
   YAML, accepting `apt_trusted_origins` (with underscores) as a fallback,
-  mirroring the `brew-cask` / `brew_cask` convention.
+  mirroring the `brew-cask` / `brew_cask` convention.  Common origin labels
+  by distribution:
+  - **Debian:** `"Debian"`
+  - **Ubuntu:** `"Ubuntu"`
+  - **Raspberry Pi OS:** `"Raspbian"` (for Raspberry Pi Foundation repos)
+
+  A Raspberry Pi OS user's config might include:
+  ```yaml
+  whitelist:
+    apt-trusted-origins:
+      - Debian
+      - Raspbian
+  ```
 - **APT upgrade streaming.** The APT adapter's `upgrade()` method does NOT
   capture stdout/stderr — output streams directly to the terminal so users
   can see apt's download/install progress and respond to interactive dpkg
