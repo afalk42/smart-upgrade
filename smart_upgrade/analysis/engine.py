@@ -210,7 +210,13 @@ class AnalysisEngine:
         # Layers B & C — only for non-whitelisted packages.
         non_whitelisted = [p for p in packages if p.name not in whitelisted_names]
 
-        for pkg in non_whitelisted:
+        for i, pkg in enumerate(non_whitelisted, 1):
+            self._progress(
+                "package_start",
+                f"{pkg.name} {pkg.current_version} -> {pkg.new_version}"
+                f" ({i}/{len(non_whitelisted)})",
+            )
+
             # Layer B — threat intelligence
             self._progress("layer_b", f"Querying threat intel for {pkg.name}...")
             b_result = self._run_layer_b(pkg)

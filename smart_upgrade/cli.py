@@ -344,12 +344,17 @@ def main(argv: list[str] | None = None) -> int:
     # ======================================================================
     step(4, TOTAL_STEPS, "Running security analysis...")
 
+    def _analysis_progress(stage: str, detail: str) -> None:
+        logger.info("[%s] %s", stage, detail)
+        if stage == "package_start":
+            console.print(f"  [bold cyan]Evaluating possible upgrade:[/bold cyan] {detail}")
+
     results: list[AnalysisResult] = []
     try:
         engine = AnalysisEngine(
             config=config,
             adapter=adapter,
-            progress_callback=lambda stage, detail: logger.info("[%s] %s", stage, detail),
+            progress_callback=_analysis_progress,
         )
         results = engine.analyze(packages, whitelisted_names)
     except ClaudeNotFoundError as exc:
@@ -383,7 +388,18 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = adapter.upgrade(approved_names)
             if result.returncode != 0:
-                err_msg = f"Upgrade returned exit code {result.returncode}: {result.stderr.strip()}"
+                # stderr may be None when the adapter streams output
+                # directly to the terminal (e.g. APT).
+                stderr_text = ""
+                if result.stderr:
+                    stderr_text = (
+                        result.stderr.strip()
+                        if isinstance(result.stderr, str)
+                        else result.stderr.decode(errors="replace").strip()
+                    )
+                err_msg = f"Upgrade returned exit code {result.returncode}"
+                if stderr_text:
+                    err_msg += f": {stderr_text}"
                 show_warning(err_msg)
                 errors.append(err_msg)
         except Exception as exc:

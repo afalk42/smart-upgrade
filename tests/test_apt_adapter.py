@@ -91,6 +91,11 @@ class TestUpgrade:
 
         cmd = mock_run.call_args[0][0]
         assert cmd == ["sudo", "apt", "upgrade", "-y"]
+        # Output should NOT be captured — it streams to the terminal
+        # so users see progress and can answer dpkg prompts.
+        kwargs = mock_run.call_args[1]
+        assert "capture_output" not in kwargs
+        assert "stdout" not in kwargs
 
     def test_upgrade_specific(self):
         with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:

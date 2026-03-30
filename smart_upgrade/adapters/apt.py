@@ -235,8 +235,12 @@ class AptAdapter:
     # Upgrade
     # ------------------------------------------------------------------
 
-    def upgrade(self, packages: list[str] | None = None) -> subprocess.CompletedProcess[str]:
+    def upgrade(self, packages: list[str] | None = None) -> subprocess.CompletedProcess[bytes]:
         """Run ``sudo apt upgrade`` (or install specific packages).
+
+        Output is streamed live to the terminal so the user can see
+        download/install progress and respond to interactive ``dpkg``
+        prompts (e.g. config-file conflict questions).
 
         Parameters
         ----------
@@ -250,7 +254,7 @@ class AptAdapter:
             cmd = ["sudo", "apt", "upgrade", "-y"]
 
         logger.info("Running: %s", " ".join(cmd))
-        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+        return subprocess.run(cmd, check=False)
 
     # ------------------------------------------------------------------
     # Package metadata
