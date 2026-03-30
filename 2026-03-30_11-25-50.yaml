@@ -1,0 +1,241 @@
+timestamp: '2026-03-30T15:25:50.501962+00:00'
+platform: linux-apt
+package_manager: APT
+pending_upgrades:
+- name: imagemagick-6-common
+  current_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm7
+  new_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm8
+  source: apt
+  maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+  homepage: null
+  source_repo: null
+  apt_origin: UbuntuESMApps
+- name: imagemagick-6.q16
+  current_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm7
+  new_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm8
+  source: apt
+  maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+  homepage: null
+  source_repo: null
+  apt_origin: UbuntuESMApps
+- name: imagemagick
+  current_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm7
+  new_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm8
+  source: apt
+  maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+  homepage: null
+  source_repo: null
+  apt_origin: UbuntuESMApps
+- name: libmagickcore-6.q16-7-extra
+  current_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm7
+  new_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm8
+  source: apt
+  maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+  homepage: null
+  source_repo: null
+  apt_origin: UbuntuESMApps
+- name: libmagickcore-6.q16-7t64
+  current_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm7
+  new_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm8
+  source: apt
+  maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+  homepage: null
+  source_repo: null
+  apt_origin: UbuntuESMApps
+- name: libmagickwand-6.q16-7t64
+  current_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm7
+  new_version: 8:6.9.12.98+dfsg1-5.2ubuntu0.1~esm8
+  source: apt
+  maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+  homepage: null
+  source_repo: null
+  apt_origin: UbuntuESMApps
+- name: python3-pyasn1
+  current_version: 0.4.8-4ubuntu0.1
+  new_version: 0.4.8-4ubuntu0.2
+  source: apt
+  maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+  homepage: http://snmplabs.com/pyasn1/index.html
+  source_repo: null
+  apt_origin: Ubuntu
+analysis_results:
+- package_name: imagemagick-6-common
+  risk_level: clear
+  findings: []
+  recommendation: proceed
+  details: 'Minor ESM security patch (esm7 → esm8). Same upstream version 6.9.12.98,
+    same Debian revision. This is a standard Ubuntu Extended Security Maintenance
+    update. No version bump anomaly.
+
+    [Threat Intel] No threats detected. The upgrade from esm7 to esm8 is a routine
+    Ubuntu Extended Security Maintenance patch for imagemagick-6-common. The Brave
+    Search result references an older CVE-2023-34152 on Debian oldstable, which is
+    unrelated to this specific ESM update. OSV and NVD returned no findings for this
+    package version. There are no indicators of compromised maintainers, supply-chain
+    attacks, tampering, or data exfiltration.'
+- package_name: imagemagick-6.q16
+  risk_level: clear
+  findings:
+  - category: known_cve
+    severity: low
+    description: A Reddit post references CVE-2023-34152 affecting ImageMagick on
+      Debian oldstable (8:6.9.11.60+dfsg-1.6+deb12u4), which is a different distribution
+      and version line than the Ubuntu ESM package being upgraded here. The upgrade
+      from esm7 to esm8 is a routine Ubuntu Extended Security Maintenance patch, and
+      neither OSV nor NVD returned active CVE findings for this specific package version.
+    source: brave_search
+    reference_url: https://www.reddit.com/r/linuxquestions/comments/1nir41p/how_to_fix_imagemagick_cve202334152/
+  recommendation: proceed
+  details: 'Part of the same ImageMagick ESM patch set. Identical version transition
+    as imagemagick-6-common. Expected co-upgrade.
+
+    [Threat Intel] This is a routine Ubuntu ESM (Extended Security Maintenance) micro-revision
+    bump from esm7 to esm8 within the same upstream version (6.9.12.98). The version
+    numbering is consistent with standard Canonical ESM security patching — no version
+    anomalies, no maintainer changes, and no supply-chain indicators. OSV and NVD
+    returned no findings for this package version. The only Brave Search hit references
+    a CVE on a different Debian release and version line, not directly applicable
+    here. No indicators of compromise, tampering, credential harvesting, or data exfiltration
+    were found in the available data.'
+- package_name: imagemagick
+  risk_level: medium
+  findings:
+  - category: known_cve
+    severity: critical
+    description: Multiple critical-severity CVEs affecting ImageMagick in 2025-2026
+      with CVSS scores of 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H), including CVE-2026-22770,
+      CVE-2026-23876, CVE-2026-25897, CVE-2026-25968, CVE-2026-25971, CVE-2026-25983,
+      CVE-2026-25986, CVE-2025-53014, CVE-2025-53101, and others. These indicate remote
+      code execution potential with no authentication or user interaction required.
+    source: OSV
+    reference_url: null
+  - category: known_cve
+    severity: critical
+    description: 'CVE-2023-34152: OS Command Injection vulnerability in ImageMagick
+      (CVSS 9.8). Allows remote attackers to achieve full confidentiality, integrity,
+      and availability impact.'
+    source: Brave Search / OSV
+    reference_url: https://security.snyk.io/vuln/SNYK-DEBIAN12-IMAGEMAGICK-5660573
+  - category: known_cve
+    severity: medium
+    description: 'CVE-2026-28688: A recently disclosed ImageMagick vulnerability tracked
+      by BitNinja Security. CVSS indicates low-severity DoS (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L),
+      but notable as it is actively being reported on by security vendors.'
+    source: Brave Search / OSV
+    reference_url: https://bitninja.com/blog/cve-2026-28688-imagemagick-vulnerability-update/
+  - category: known_cve
+    severity: high
+    description: Four Debian Security Advisories (DSA-5997-1, DSA-6111-1, DSA-6158-1,
+      DSA-6169-1) have been issued for ImageMagick, confirming the Debian security
+      team is actively patching this package.
+    source: OSV
+    reference_url: null
+  recommendation: proceed
+  details: 'Meta-package for ImageMagick, same ESM patch transition. All six ImageMagick-related
+    packages share the same source package and version, which is the expected pattern.
+
+    [Threat Intel] ImageMagick has a large number of known CVEs, including several
+    critical remote code execution vulnerabilities from 2025-2026. However, this upgrade
+    (esm7 to esm8) is an Ubuntu Extended Security Maintenance patch — the expected
+    mechanism for delivering security fixes. The version bump is minimal (only the
+    ESM revision changes), consistent with a targeted security backport rather than
+    a major version change. There are no indicators of supply-chain compromise, maintainer
+    account takeover, credential harvesting, or package tampering. The multiple Debian
+    Security Advisories confirm this is a legitimate, coordinated security update.
+    Applying this update is recommended to remediate the critical CVEs affecting the
+    currently installed version.'
+- package_name: libmagickcore-6.q16-7-extra
+  risk_level: clear
+  findings: []
+  recommendation: proceed
+  details: 'ImageMagick core library extras, same ESM patch. The ''t64'' and non-t64
+    variants coexisting is normal for the 64-bit time_t transition on Ubuntu.
+
+    [Threat Intel] No threat intelligence findings for libmagickcore-6.q16-7-extra.
+    Brave Search, OSV, and NVD returned no results. The upgrade is a minor ESM (Extended
+    Security Maintenance) patch within the same upstream version (6.9.12.98), moving
+    from esm7 to esm8, which is consistent with routine Canonical security maintenance.
+    No indicators of compromise, supply-chain attacks, or active exploitation were
+    found.'
+- package_name: libmagickcore-6.q16-7t64
+  risk_level: clear
+  findings: []
+  recommendation: proceed
+  details: 'ImageMagick core library (time_t 64-bit variant). Same coordinated ESM
+    security update. No anomalies.
+
+    [Threat Intel] No threat intelligence findings for libmagickcore-6.q16-7t64. The
+    upgrade is a minor ESM (Extended Security Maintenance) patch within the same upstream
+    version (6.9.12.98), moving from esm7 to esm8. This is a standard Ubuntu security
+    maintenance release. Brave Search, OSV, and NVD returned no results indicating
+    compromised maintainers, supply-chain attacks, active CVEs, or tampering. The
+    package originates from Ubuntu''s official ESM repository, which is a trusted
+    source.'
+- package_name: libmagickwand-6.q16-7t64
+  risk_level: clear
+  findings: []
+  recommendation: proceed
+  details: 'ImageMagick Wand API library. Same ESM patch as all other ImageMagick
+    packages. Expected member of this update set.
+
+    [Threat Intel] No threat intelligence findings for libmagickwand-6.q16-7t64. The
+    upgrade is a minor ESM (Extended Security Maintenance) patch within the same upstream
+    version (6.9.12.98), moving from esm7 to esm8. Brave Search, OSV, and NVD returned
+    no results. ESM updates are published by Canonical through official Ubuntu channels
+    and are security-vetted. No indicators of compromise, supply-chain tampering,
+    or active exploitation were found.'
+- package_name: python3-pyasn1
+  risk_level: low
+  findings:
+  - category: other
+    severity: low
+    description: ASN.1 parsing library — historically a target for crafted-input vulnerabilities
+    source: layer_a_review
+    reference_url: null
+  recommendation: proceed
+  details: Minor patch release (ubuntu0.1 → ubuntu0.2) for pyasn1, a widely-used ASN.1
+    encoder/decoder used in TLS, SNMP, and LDAP stacks. The version bump is minimal
+    and consistent with a security or bug-fix patch from Ubuntu. pyasn1 is a well-known,
+    legitimate package maintained by the Snimpy/etingof project. No signs of takeover
+    or typosquatting. Flagged low because ASN.1 parsers handle untrusted input and
+    bugs here can have auth-bypass or remote-code-execution impact, so the changelog
+    is worth reviewing.
+decisions:
+- package: imagemagick-6-common
+  approved: true
+  risk_level: clear
+  recommendation: proceed
+- package: imagemagick-6.q16
+  approved: true
+  risk_level: clear
+  recommendation: proceed
+- package: imagemagick
+  approved: true
+  risk_level: medium
+  recommendation: proceed
+- package: libmagickcore-6.q16-7-extra
+  approved: true
+  risk_level: clear
+  recommendation: proceed
+- package: libmagickcore-6.q16-7t64
+  approved: true
+  risk_level: clear
+  recommendation: proceed
+- package: libmagickwand-6.q16-7t64
+  approved: true
+  risk_level: clear
+  recommendation: proceed
+- package: python3-pyasn1
+  approved: true
+  risk_level: low
+  recommendation: proceed
+upgraded:
+- imagemagick-6-common
+- imagemagick-6.q16
+- imagemagick
+- libmagickcore-6.q16-7-extra
+- libmagickcore-6.q16-7t64
+- libmagickwand-6.q16-7t64
+- python3-pyasn1
+skipped: []
+errors: []

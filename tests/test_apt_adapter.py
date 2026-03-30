@@ -290,6 +290,38 @@ class TestEnrichMetadata:
         assert all(p.maintainer is None for p in packages)
         assert all(p.homepage is None for p in packages)
 
+    def test_source_package_homepage_fallback(self):
+        """When a binary package has no Homepage, try its Source package."""
+        apt_list = (
+            "Listing... Done\n"
+            "imagemagick-6-common/noble-apps-security "
+            "8:6.9.12-esm8 amd64 [upgradable from: 8:6.9.12-esm7]\n"
+        )
+        # Binary package has no Homepage but has a Source field.
+        apt_show_binary = (
+            "Package: imagemagick-6-common\n"
+            "Maintainer: Ubuntu Developers <ubuntu-devel@lists.ubuntu.com>\n"
+            "Source: imagemagick (8:6.9.12)\n"
+        )
+        # Source package (looked up as binary) has Homepage.
+        apt_show_source = (
+            "Package: imagemagick\n"
+            "Homepage: https://www.imagemagick.org/\n"
+        )
+        with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=apt_list, stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),        # policy
+                MagicMock(returncode=0, stdout=apt_show_binary, stderr=""),  # 1st show
+                MagicMock(returncode=0, stdout=apt_show_source, stderr=""),  # 2nd show
+            ]
+
+            adapter = AptAdapter()
+            packages = adapter.list_upgradable()
+
+        assert packages[0].homepage == "https://www.imagemagick.org/"
+        assert adapter._homepages["imagemagick-6-common"] == "https://www.imagemagick.org/"
+
     def test_caches_homepages_for_changelog(self):
         with patch("smart_upgrade.adapters.apt.subprocess.run") as mock_run:
             mock_run.side_effect = [

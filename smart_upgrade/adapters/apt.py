@@ -187,37 +187,16 @@ class AptAdapter:
         Similar to the Homebrew adapter's ``_enrich_metadata()`` which uses
         ``brew info --json=v2``.  Homepages are also cached for use by
         :meth:`get_changelog`'s GitHub release notes fallback.
+
+        When a binary package has no ``Homepage`` field (common with ESM
+        packages), a second lookup is attempted using the source package
+        name from the ``Source:`` field.
         """
         if not packages:
             return
         try:
             names = [p.name for p in packages]
-            result = subprocess.run(
-                ["apt", "show", *names],
-                capture_output=True,
-                text=True,
-                check=False,
-                env={"LANG": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
-            )
-
-            # Parse whatever output we got — apt show may return non-zero
-            # when some packages are unknown but still prints data for others.
-            pkg_info: dict[str, dict[str, str]] = {}
-            current_name: str | None = None
-
-            for line in result.stdout.splitlines():
-                if line.startswith("Package:"):
-                    current_name = line.split(":", 1)[1].strip()
-                    pkg_info.setdefault(current_name, {})
-                elif current_name:
-                    if line.startswith("Maintainer:"):
-                        pkg_info[current_name].setdefault(
-                            "maintainer", line.split(":", 1)[1].strip(),
-                        )
-                    elif line.startswith("Homepage:"):
-                        pkg_info[current_name].setdefault(
-                            "homepage", line.split(":", 1)[1].strip(),
-                        )
+            pkg_info = self._parse_apt_show(names)
 
             for pkg in packages:
                 info = pkg_info.get(pkg.name, {})
@@ -225,11 +204,69 @@ class AptAdapter:
                     pkg.maintainer = info["maintainer"]
                 if info.get("homepage") and pkg.homepage is None:
                     pkg.homepage = info["homepage"]
-                # Cache homepage for changelog fallback.
                 if info.get("homepage"):
                     self._homepages[pkg.name] = info["homepage"]
+
+            # Second pass: for packages still missing Homepage, try looking
+            # up their source package name (e.g. binary "imagemagick-6-common"
+            # has Source: "imagemagick" which may have a Homepage).
+            missing_hp = [p for p in packages if p.homepage is None]
+            if missing_hp:
+                source_names: set[str] = set()
+                for pkg in missing_hp:
+                    src = pkg_info.get(pkg.name, {}).get("source", "")
+                    if src and src != pkg.name and src not in names:
+                        source_names.add(src)
+                if source_names:
+                    src_info = self._parse_apt_show(sorted(source_names))
+                    for pkg in missing_hp:
+                        src = pkg_info.get(pkg.name, {}).get("source", "")
+                        hp = src_info.get(src, {}).get("homepage", "")
+                        if hp and pkg.homepage is None:
+                            pkg.homepage = hp
+                            self._homepages[pkg.name] = hp
         except Exception:
             logger.debug("Failed to enrich APT metadata", exc_info=True)
+
+    @staticmethod
+    def _parse_apt_show(names: list[str]) -> dict[str, dict[str, str]]:
+        """Run ``apt show`` for *names* and parse metadata fields.
+
+        Returns a dict mapping package name to its parsed fields
+        (``maintainer``, ``homepage``, ``source``).
+        """
+        result = subprocess.run(
+            ["apt", "show", *names],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"LANG": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+        )
+
+        pkg_info: dict[str, dict[str, str]] = {}
+        current_name: str | None = None
+
+        for line in result.stdout.splitlines():
+            if line.startswith("Package:"):
+                current_name = line.split(":", 1)[1].strip()
+                pkg_info.setdefault(current_name, {})
+            elif current_name:
+                if line.startswith("Maintainer:"):
+                    pkg_info[current_name].setdefault(
+                        "maintainer", line.split(":", 1)[1].strip(),
+                    )
+                elif line.startswith("Homepage:"):
+                    pkg_info[current_name].setdefault(
+                        "homepage", line.split(":", 1)[1].strip(),
+                    )
+                elif line.startswith("Source:"):
+                    # "Source: imagemagick" or "Source: imagemagick (8:6.9...)"
+                    raw = line.split(":", 1)[1].strip()
+                    pkg_info[current_name].setdefault(
+                        "source", raw.split("(")[0].strip(),
+                    )
+
+        return pkg_info
 
     # ------------------------------------------------------------------
     # Upgrade

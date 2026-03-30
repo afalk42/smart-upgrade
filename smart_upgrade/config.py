@@ -78,7 +78,7 @@ class Config:
     model: str = "opus"
     review_depth: str = "light"
     auto_approve: bool = False
-    log_level: str = "info"
+    log_level: str = "warning"
     log_directory: Path = field(default_factory=lambda: DEFAULT_LOG_DIR)
     whitelist: WhitelistConfig = field(default_factory=WhitelistConfig)
     threat_intel: ThreatIntelConfig = field(default_factory=ThreatIntelConfig)

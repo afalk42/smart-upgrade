@@ -14,7 +14,7 @@ class TestLoadConfigDefaults:
         assert cfg.model == "opus"
         assert cfg.review_depth == "light"
         assert cfg.auto_approve is False
-        assert cfg.log_level == "info"
+        assert cfg.log_level == "warning"
         assert cfg.whitelist.apt == []
         assert cfg.whitelist.brew == []
         assert cfg.whitelist.brew_cask == []
