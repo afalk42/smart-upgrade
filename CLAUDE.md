@@ -169,8 +169,12 @@ Test fixtures live in `tests/fixtures/`.
 - **APT metadata enrichment.** Similarly, `apt list --upgradable` does NOT
   include maintainer, homepage, or source info.  The APT adapter runs
   `apt show <all-packages>` (batched, single invocation) to populate
-  `maintainer` and `homepage` on each `PendingUpgrade`.  Homepages are
-  also cached in `self._homepages` for use by the changelog GitHub fallback.
+  `maintainer` and `homepage` on each `PendingUpgrade`.  It also parses
+  the `Source:` field and, for packages still missing Homepage after the
+  first pass, tries a second `apt show` lookup using the source package
+  name (useful for ESM packages whose binary metadata often omits
+  Homepage while the source-named package has it).  Homepages are cached
+  in `self._homepages` for use by the changelog GitHub fallback.
 - **APT changelog retrieval.** `apt changelog` only works for packages in
   official Debian/Ubuntu repos.  For third-party packages (e.g. Brave
   Browser from its own APT repo), it fails.  The APT adapter handles this
@@ -199,13 +203,30 @@ Test fixtures live in `tests/fixtures/`.
   glob patterns.  The config key is `apt-trusted-origins` (with dashes) in
   YAML, accepting `apt_trusted_origins` (with underscores) as a fallback,
   mirroring the `brew-cask` / `brew_cask` convention.
+- **APT upgrade streaming.** The APT adapter's `upgrade()` method does NOT
+  capture stdout/stderr — output streams directly to the terminal so users
+  can see apt's download/install progress and respond to interactive dpkg
+  prompts (e.g. config-file conflict questions).  This means `result.stdout`
+  and `result.stderr` are `None` after the call; `cli.py` handles this
+  gracefully when checking for errors.  The Homebrew adapter still captures
+  output (brew upgrades are fast and non-interactive).
+- **Analysis progress callback.** The engine emits a ``"package_start"``
+  progress event before each non-whitelisted package's Layer B/C analysis,
+  including the package name, version change, and counter.  ``cli.py``
+  renders this as a Rich-formatted line.  The default log level is now
+  ``warning`` (not ``info``), so ``[INFO]`` messages are hidden unless
+  ``--log-level info`` is passed — the Rich progress messages are the
+  primary user-facing output during analysis.
 - **subprocess calls.** APT adapter uses `sudo` -- tests must mock `subprocess.run`.
   The APT adapter makes three subprocess calls in `list_upgradable()`:
-  `apt list --upgradable`, `apt-cache policy`, and `apt show <all-packages>`.
+  `apt list --upgradable`, `apt-cache policy`, and `apt show <all-packages>`
+  (plus an optional fourth `apt show` for source-package Homepage fallback).
   Existing tests that mock a single return value still pass because
   `_enrich_origins()` and `_enrich_metadata()` gracefully handle
-  unparseable output.  Tests using `side_effect` lists need all three
-  mock values.
+  unparseable output.  Tests using `side_effect` lists need mock values
+  for each expected call.  Note that `upgrade()` does NOT capture output
+  (streams to terminal), so its `CompletedProcess` has `None` for
+  stdout/stderr.
 - **Prompt injection.** Package names and changelog content are inserted into
   Claude prompts. The prompts instruct Claude to return JSON, but malicious
   content in changelogs could theoretically attempt prompt injection. The

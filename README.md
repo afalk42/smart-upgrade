@@ -4,6 +4,15 @@ Security-aware system package upgrade tool powered by Claude AI.
 
 Instead of blindly running `apt upgrade` or `brew upgrade`, `smart-upgrade` inserts an AI-driven security review between "check for updates" and "install updates" to help detect supply-chain attacks before they reach your system.
 
+## What's New in 0.2.0
+
+- **Origin-based auto-whitelisting (APT)**: Trust all packages from official Ubuntu/Debian repositories with a single config line (`apt-trusted-origins: [Ubuntu]`) instead of maintaining long name-based lists. Third-party packages (PPAs, Brave, etc.) still get full security analysis.
+- **APT metadata enrichment**: Package maintainer and homepage are now populated in the audit log via a batched `apt show` call, with a source-package fallback for packages (like ESM variants) whose binary metadata omits Homepage.
+- **APT changelog GitHub fallback**: When `apt changelog` fails (third-party and ESM packages), the adapter now checks the package's homepage for a GitHub URL and fetches release notes via the GitHub API -- the same strategy used by the Homebrew adapter.
+- **Live APT upgrade streaming**: `sudo apt upgrade` output is now streamed directly to the terminal so you can see download/install progress in real time and respond to interactive dpkg prompts (e.g., config file conflict questions).
+- **Color-coded analysis progress**: During security analysis, each non-whitelisted package now shows a Rich-formatted progress line (`Evaluating possible upgrade: <name> <old> -> <new> (N/M)`) instead of relying solely on log messages.
+- **Default log level changed to `warning`**: The `[INFO]` log messages are no longer shown by default since the new Rich progress messages provide better user feedback. Use `--log-level info` or `--log-level debug` for verbose output.
+
 ## How It Works
 
 1. **Refreshes** your package index (`apt update` / `brew update`)
@@ -81,7 +90,7 @@ pip install pyyaml rich       # install dependencies
 
 ```bash
 smart-upgrade --version
-# smart-upgrade 0.1.0
+# smart-upgrade 0.2.0
 ```
 
 ## Usage
@@ -144,7 +153,7 @@ options:
   --config PATH              Config file path
   --packages PKG [PKG ...]   Only consider specific packages
   --show-whitelist           Show whitelist and exit
-  --log-level LEVEL          debug, info (default), warning, error
+  --log-level LEVEL          debug, info, warning (default), error
   --version                  Show version and exit
 ```
 
@@ -175,8 +184,8 @@ model: opus
 # Auto-approve when no concerns found (same as -y flag)
 auto_approve: false
 
-# Logging verbosity
-log_level: info
+# Logging verbosity (default: warning)
+log_level: warning
 
 # Audit log location
 log_directory: ~/.local/share/smart-upgrade/logs

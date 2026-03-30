@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart-upgrade"
-version = "0.1.0"
+version = "0.2.0"
 description = "Security-aware system package upgrade tool powered by Claude AI"
 readme = "README.md"
 license = {text = "MIT"}
