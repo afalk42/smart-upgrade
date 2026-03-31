@@ -4,6 +4,8 @@ Security-aware system package upgrade tool powered by Claude AI.
 
 Instead of blindly running `apt upgrade` or `brew upgrade`, `smart-upgrade` inserts an AI-driven security review between "check for updates" and "install updates" to help detect supply-chain attacks before they reach your system.
 
+![Screenshot](artifacts/screenshot.png)
+
 ## What's New in 0.2.0
 
 - **Origin-based auto-whitelisting (APT)**: Trust all packages from official Ubuntu/Debian repositories with a single config line (`apt-trusted-origins: [Ubuntu]`) instead of maintaining long name-based lists. Third-party packages (PPAs, Brave, etc.) still get full security analysis.
