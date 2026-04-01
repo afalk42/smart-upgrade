@@ -112,6 +112,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only consider specific packages for upgrade",
     )
     parser.add_argument(
+        "--npm",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="PACKAGE@VERSION",
+        help=(
+            "Audit npm global packages.  When a package spec is given "
+            "(e.g. openclaw@latest), audit that specific install; "
+            "otherwise audit all outdated global packages."
+        ),
+    )
+    parser.add_argument(
         "--show-whitelist",
         action="store_true",
         help="Display the current package whitelist and exit",
@@ -135,9 +147,23 @@ def build_parser() -> argparse.ArgumentParser:
 # Adapter factory
 # ---------------------------------------------------------------------------
 
-def _create_adapter(platform_id: str):
-    """Instantiate the correct package-manager adapter."""
-    if platform_id == "macos":
+def _create_adapter(platform_id: str, *, npm_target: str | None = None):
+    """Instantiate the correct package-manager adapter.
+
+    Parameters
+    ----------
+    platform_id:
+        The detected platform identifier (``"macos"``, ``"linux-apt"``,
+        or ``"npm"``).
+    npm_target:
+        When *platform_id* is ``"npm"`` and the user specified a package
+        spec (e.g. ``"openclaw@latest"``), pass it here.  ``None`` means
+        audit all outdated global packages.
+    """
+    if platform_id == "npm":
+        from smart_upgrade.adapters.npm import NpmAdapter
+        return NpmAdapter(target_package=npm_target)
+    elif platform_id == "macos":
         from smart_upgrade.adapters.brew import BrewAdapter
         return BrewAdapter()
     elif platform_id == "linux-apt":
@@ -286,13 +312,21 @@ def main(argv: list[str] | None = None) -> int:
     # Step 1: Detect platform
     # ======================================================================
     step(1, TOTAL_STEPS, "Detecting platform...")
-    try:
-        platform_id = detect_platform()
-    except UnsupportedPlatformError as exc:
-        show_error(str(exc))
-        return 1
 
-    adapter = _create_adapter(platform_id)
+    if args.npm is not None:
+        # --npm bypasses OS-based detection entirely.
+        platform_id = "npm"
+        npm_target = args.npm if args.npm is not True else None
+        adapter = _create_adapter(platform_id, npm_target=npm_target)
+    else:
+        npm_target = None
+        try:
+            platform_id = detect_platform()
+        except UnsupportedPlatformError as exc:
+            show_error(str(exc))
+            return 1
+        adapter = _create_adapter(platform_id)
+
     console.print(f"  Platform: [bold]{platform_id}[/bold] ({adapter.name})")
 
     # ======================================================================

@@ -39,6 +39,8 @@ def is_whitelisted(package: PendingUpgrade, whitelist: WhitelistConfig) -> bool:
         return _matches_any(package.name, whitelist.brew)
     elif package.source == PackageSource.BREW_CASK:
         return _matches_any(package.name, whitelist.brew_cask)
+    elif package.source == PackageSource.NPM:
+        return _matches_any(package.name, whitelist.npm)
     return False
 
 
@@ -78,4 +80,6 @@ def format_whitelist_display(whitelist: WhitelistConfig) -> dict[str, list[str]]
         result["Homebrew Formulae"] = sorted(whitelist.brew)
     if whitelist.brew_cask:
         result["Homebrew Casks"] = sorted(whitelist.brew_cask)
+    if whitelist.npm:
+        result["npm"] = sorted(whitelist.npm)
     return result

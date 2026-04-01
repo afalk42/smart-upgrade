@@ -112,6 +112,8 @@ def _ecosystem_for_source(source: PackageSource) -> str:
     """
     if source == PackageSource.APT:
         return "Debian"
+    if source == PackageSource.NPM:
+        return "npm"
     # Homebrew packages are not tracked by OSV.dev.  The query_osv()
     # function will detect this and return an empty result.
     return "Homebrew"
@@ -274,6 +276,8 @@ class AnalysisEngine:
         sources = {p.source for p in packages}
         if PackageSource.APT in sources:
             plat, pm = "Linux (Debian/Ubuntu)", "APT"
+        elif PackageSource.NPM in sources:
+            plat, pm = "Cross-platform (npm)", "npm"
         else:
             plat, pm = "macOS", "Homebrew"
 
@@ -338,6 +342,7 @@ class AnalysisEngine:
             PackageSource.APT: "APT",
             PackageSource.BREW_FORMULA: "Homebrew",
             PackageSource.BREW_CASK: "Homebrew (cask)",
+            PackageSource.NPM: "npm",
         }.get(package.source, str(package.source))
 
         prompt = _render(template, {

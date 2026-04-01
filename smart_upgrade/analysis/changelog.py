@@ -57,6 +57,7 @@ def format_changelog_for_prompt(
         PackageSource.APT: "APT (Debian/Ubuntu)",
         PackageSource.BREW_FORMULA: "Homebrew formula",
         PackageSource.BREW_CASK: "Homebrew cask",
+        PackageSource.NPM: "npm",
     }.get(package.source, str(package.source))
 
     return {

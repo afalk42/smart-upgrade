@@ -44,6 +44,7 @@ class PackageSource(str, Enum):
     APT = "apt"
     BREW_FORMULA = "brew-formula"
     BREW_CASK = "brew-cask"
+    NPM = "npm"
 
     def __str__(self) -> str:
         return self.value

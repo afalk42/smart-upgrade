@@ -69,6 +69,7 @@ class WhitelistConfig:
     apt_trusted_origins: list[str] = field(default_factory=list)
     brew: list[str] = field(default_factory=list)
     brew_cask: list[str] = field(default_factory=list)
+    npm: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -145,6 +146,7 @@ def load_config(path: Path | None = None) -> Config:
         ),
         brew=wl_raw.get("brew", []) or [],
         brew_cask=wl_raw.get("brew-cask", wl_raw.get("brew_cask", [])) or [],
+        npm=wl_raw.get("npm", []) or [],
     )
 
     # --- threat_intel ---
