@@ -182,11 +182,29 @@ def _collect_decisions(
     results: list[AnalysisResult],
     auto_approve: bool,
     dry_run: bool,
+    *,
+    npm_targeted: bool = False,
 ) -> list[UpgradeDecision]:
-    """Prompt the user (or auto-approve) and return decisions for each package."""
+    """Prompt the user (or auto-approve) and return decisions for each package.
+
+    Parameters
+    ----------
+    npm_targeted:
+        When True the upgrade is an atomic npm install — all packages
+        share a single yes/no decision (you can't cherry-pick transitive
+        deps).  The decision is based on the worst recommendation across
+        all packages.
+    """
     from smart_upgrade.ui import prompt_package_decision, prompt_upgrade_all
 
     result_map = {r.package_name: r for r in results}
+
+    # --- npm targeted mode: all-or-nothing decision ---
+    if npm_targeted:
+        return _collect_npm_targeted_decisions(
+            packages, result_map, auto_approve, dry_run,
+        )
+
     decisions: list[UpgradeDecision] = []
 
     # Separate packages by recommendation.
@@ -256,6 +274,89 @@ def _collect_decisions(
                 decisions.append(UpgradeDecision(package=pkg, analysis=r, approved=False, skipped_reason="user rejected"))
 
     return decisions
+
+
+def _collect_npm_targeted_decisions(
+    packages: list[PendingUpgrade],
+    result_map: dict[str, AnalysisResult],
+    auto_approve: bool,
+    dry_run: bool,
+) -> list[UpgradeDecision]:
+    """All-or-nothing decision for npm targeted installs.
+
+    In targeted mode (``--npm openclaw@latest``), npm resolves the entire
+    dependency tree atomically — you can't cherry-pick individual transitive
+    deps.  The decision here is binary: install or don't.
+
+    The prompt is based on the worst recommendation across all analysed
+    packages.
+    """
+    from smart_upgrade.ui import prompt_upgrade_all
+
+    # Determine the worst recommendation across all packages.
+    worst = Recommendation.PROCEED
+    for r in result_map.values():
+        if r.recommendation == Recommendation.BLOCK:
+            worst = Recommendation.BLOCK
+            break
+        if r.recommendation == Recommendation.REVIEW:
+            worst = Recommendation.REVIEW
+
+    if dry_run:
+        return [
+            UpgradeDecision(
+                package=pkg,
+                analysis=result_map.get(pkg.name),
+                approved=False,
+                skipped_reason="dry run",
+            )
+            for pkg in packages
+        ]
+
+    if worst == Recommendation.PROCEED and auto_approve:
+        return [
+            UpgradeDecision(
+                package=pkg,
+                analysis=result_map.get(pkg.name),
+                approved=True,
+            )
+            for pkg in packages
+        ]
+
+    # Show appropriate prompt based on worst recommendation.
+    if worst == Recommendation.BLOCK:
+        console.print(
+            "\n[bold red]Security concerns detected[/bold red] in the dependency tree."
+        )
+        answer_str = console.input(
+            "[bold]Install anyway? \\[y/N]: [/bold]"
+        ).strip().lower()
+        approved = answer_str in ("y", "yes")
+    elif worst == Recommendation.REVIEW:
+        console.print(
+            "\n[yellow]Some dependencies flagged for review.[/yellow]"
+        )
+        answer_str = console.input(
+            "[bold]Proceed with install? \\[y/N]: [/bold]"
+        ).strip().lower()
+        approved = answer_str in ("y", "yes")
+    else:
+        console.print(
+            f"\n[green]{len(packages)} packages[/green] in the dependency tree "
+            f"passed security review."
+        )
+        approved = prompt_upgrade_all()
+
+    reason = None if approved else "user declined"
+    return [
+        UpgradeDecision(
+            package=pkg,
+            analysis=result_map.get(pkg.name),
+            approved=approved,
+            skipped_reason=reason,
+        )
+        for pkg in packages
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -405,11 +506,15 @@ def main(argv: list[str] | None = None) -> int:
     # ======================================================================
     step(5, TOTAL_STEPS, "Upgrade decision...")
 
+    # In npm targeted mode the install is atomic (all-or-nothing).
+    is_npm_targeted = npm_target is not None
+
     decisions = _collect_decisions(
         packages=packages,
         results=results,
         auto_approve=config.auto_approve,
         dry_run=args.dry_run,
+        npm_targeted=is_npm_targeted,
     )
 
     approved_names = [d.package.name for d in decisions if d.approved]
@@ -420,7 +525,13 @@ def main(argv: list[str] | None = None) -> int:
     if approved_names and not args.dry_run:
         console.print(f"\n[bold]Upgrading {len(approved_names)} packages...[/bold]")
         try:
-            result = adapter.upgrade(approved_names)
+            # In npm targeted mode, call upgrade() with no args — it uses
+            # the original target spec.  Passing individual transitive dep
+            # names would be wrong (they're not top-level globals).
+            if is_npm_targeted:
+                result = adapter.upgrade()
+            else:
+                result = adapter.upgrade(approved_names)
             if result.returncode != 0:
                 # stderr may be None when the adapter streams output
                 # directly to the terminal (e.g. APT).

@@ -92,6 +92,7 @@ def show_pending_upgrades(
             PackageSource.APT: "APT Packages",
             PackageSource.BREW_FORMULA: "Homebrew Formulae",
             PackageSource.BREW_CASK: "Homebrew Casks",
+            PackageSource.NPM: "npm",
         }.get(pkg.source, str(pkg.source))
         groups.setdefault(label, []).append(pkg)
 
