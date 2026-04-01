@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smart_upgrade.adapters.npm import NpmAdapter
+from smart_upgrade.adapters.npm import NpmAdapter, _is_foreign_platform
 from smart_upgrade.models import PackageSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -229,9 +229,12 @@ class TestListTargeted:
         assert packages == []
 
     def test_scoped_package_names(self):
-        """Scoped packages like @scope/name are parsed correctly."""
+        """Scoped packages like @scope/name are parsed correctly.
+
+        Platform-specific adds are filtered, but changes/removes are kept.
+        """
         stdout = (
-            "add @img/sharp-darwin-arm64 0.34.5\n"
+            "add @img/sharp-linux-x64 0.34.5\n"
             "change @anthropic-ai/sdk 0.73.0 => 0.81.0\n"
             "remove @aws-sdk/client-bedrock 3.1019.0\n"
         )
@@ -240,11 +243,13 @@ class TestListTargeted:
 
         with patch("smart_upgrade.adapters.npm.subprocess.run") as mock_run:
             mock_run.return_value = _mock_run(returncode=0, stdout=stdout)
-            packages = adapter.list_upgradable()
+            # Simulate linux-x64 so the add line is kept.
+            with patch("smart_upgrade.adapters.npm._detect_local_platform", return_value=("linux", "x64")):
+                packages = adapter.list_upgradable()
 
         assert len(packages) == 3
 
-        added = next(p for p in packages if p.name == "@img/sharp-darwin-arm64")
+        added = next(p for p in packages if p.name == "@img/sharp-linux-x64")
         assert added.current_version == "(new)"
         assert added.new_version == "0.34.5"
 
@@ -255,6 +260,51 @@ class TestListTargeted:
         removed = next(p for p in packages if p.name == "@aws-sdk/client-bedrock")
         assert removed.current_version == "3.1019.0"
         assert removed.new_version == "(removed)"
+
+    def test_filters_foreign_platform_packages(self):
+        """New packages for other OS/arch are filtered; changes are kept."""
+        stdout = (
+            "change openclaw 1.2.0 => 1.3.0\n"
+            "change sqlite-vec-linux-x64 0.1.7 => 0.1.9\n"
+            "add sqlite-vec-darwin-arm64 0.1.9\n"
+            "add sqlite-vec-darwin-x64 0.1.9\n"
+            "add sqlite-vec-linux-arm64 0.1.9\n"
+            "add sqlite-vec-linux-x64 0.1.9\n"          # matches linux-x64
+            "add sqlite-vec-windows-x64 0.1.9\n"
+            "add @img/sharp-win32-x64 0.34.5\n"
+            "add @img/sharp-darwin-arm64 0.34.5\n"
+            "add @img/sharp-linux-x64 0.34.5\n"          # matches linux-x64
+            "add @img/sharp-wasm32 0.34.5\n"
+            "add @emnapi/runtime 1.9.1\n"                 # no platform tokens
+        )
+        with patch("smart_upgrade.adapters.npm.shutil.which", return_value="/usr/local/bin/npm"):
+            adapter = NpmAdapter(target_package="openclaw@latest")
+
+        with patch("smart_upgrade.adapters.npm.subprocess.run") as mock_run:
+            mock_run.return_value = _mock_run(returncode=0, stdout=stdout)
+            with patch("smart_upgrade.adapters.npm._detect_local_platform", return_value=("linux", "x64")):
+                packages = adapter.list_upgradable()
+
+        names = {p.name for p in packages}
+
+        # Changes are always kept (already installed).
+        assert "openclaw" in names
+        assert "sqlite-vec-linux-x64" in names
+
+        # New packages matching linux-x64 are kept.
+        new_names = {p.name for p in packages if p.current_version == "(new)"}
+        assert "sqlite-vec-linux-x64" in new_names or "sqlite-vec-linux-x64" in names
+        assert "@img/sharp-linux-x64" in new_names
+        assert "@emnapi/runtime" in new_names  # no platform tokens → kept
+
+        # Foreign platform packages are filtered out.
+        assert "sqlite-vec-darwin-arm64" not in names
+        assert "sqlite-vec-darwin-x64" not in names
+        assert "sqlite-vec-windows-x64" not in names
+        assert "sqlite-vec-linux-arm64" not in names
+        assert "@img/sharp-win32-x64" not in names
+        assert "@img/sharp-darwin-arm64" not in names
+        assert "@img/sharp-wasm32" not in names
 
     def test_does_not_pass_json_flag(self):
         """Targeted mode should NOT pass --json (we parse text lines)."""
@@ -439,3 +489,83 @@ class TestParseDryrunLines:
         result = NpmAdapter._parse_dryrun_lines(stdout)
         assert len(result) == 1
         assert result[0].new_version == "1.2.0-beta.3"
+
+
+# ---------------------------------------------------------------------------
+# _is_foreign_platform
+# ---------------------------------------------------------------------------
+
+class TestIsForeignPlatform:
+    """Test the platform-token detection logic for filtering optional deps."""
+
+    # -- No platform tokens (keep everywhere) --
+
+    def test_no_platform_tokens(self):
+        assert not _is_foreign_platform("express", "linux", "x64")
+        assert not _is_foreign_platform("@anthropic-ai/sdk", "linux", "x64")
+        assert not _is_foreign_platform("@emnapi/runtime", "darwin", "arm64")
+        assert not _is_foreign_platform("fast-string-width", "win32", "x64")
+
+    # -- OS matching --
+
+    def test_linux_package_on_linux(self):
+        assert not _is_foreign_platform("sqlite-vec-linux-x64", "linux", "x64")
+
+    def test_darwin_package_on_linux(self):
+        assert _is_foreign_platform("sqlite-vec-darwin-arm64", "linux", "x64")
+        assert _is_foreign_platform("@img/sharp-darwin-x64", "linux", "x64")
+
+    def test_win32_package_on_linux(self):
+        assert _is_foreign_platform("@img/sharp-win32-x64", "linux", "x64")
+        assert _is_foreign_platform("@napi-rs/canvas-win32-x64-msvc", "linux", "x64")
+
+    def test_linux_package_on_darwin(self):
+        assert _is_foreign_platform("sqlite-vec-linux-x64", "darwin", "arm64")
+
+    def test_darwin_package_on_darwin(self):
+        assert not _is_foreign_platform("@img/sharp-darwin-arm64", "darwin", "arm64")
+
+    def test_linuxmusl_matches_linux_os(self):
+        """linuxmusl is still linux for OS matching purposes."""
+        assert not _is_foreign_platform("@img/sharp-linuxmusl-x64", "linux", "x64")
+        assert _is_foreign_platform("@img/sharp-linuxmusl-x64", "darwin", "arm64")
+
+    # -- Arch matching --
+
+    def test_x64_package_on_x64(self):
+        assert not _is_foreign_platform("sqlite-vec-linux-x64", "linux", "x64")
+
+    def test_arm64_package_on_x64(self):
+        assert _is_foreign_platform("sqlite-vec-linux-arm64", "linux", "x64")
+        assert _is_foreign_platform("@img/sharp-linux-arm64", "linux", "x64")
+
+    def test_x64_package_on_arm64(self):
+        assert _is_foreign_platform("@img/sharp-linux-x64", "linux", "arm64")
+
+    def test_arm_package_on_x64(self):
+        assert _is_foreign_platform("@img/sharp-linux-arm", "linux", "x64")
+
+    def test_wasm32_filtered_everywhere(self):
+        assert _is_foreign_platform("@img/sharp-wasm32", "linux", "x64")
+        assert _is_foreign_platform("@img/sharp-wasm32", "darwin", "arm64")
+
+    # -- Combined OS + arch --
+
+    def test_right_os_wrong_arch(self):
+        assert _is_foreign_platform("@napi-rs/canvas-linux-arm64-gnu", "linux", "x64")
+
+    def test_wrong_os_right_arch(self):
+        assert _is_foreign_platform("@napi-rs/canvas-darwin-x64", "linux", "x64")
+
+    def test_right_os_right_arch(self):
+        assert not _is_foreign_platform("@napi-rs/canvas-linux-x64-musl", "linux", "x64")
+
+    # -- Edge cases --
+
+    def test_universal_darwin_not_filtered(self):
+        """'universal' is not a known arch token so it doesn't trigger filtering."""
+        assert not _is_foreign_platform("@mariozechner/clipboard-darwin-universal", "darwin", "arm64")
+        assert not _is_foreign_platform("@mariozechner/clipboard-darwin-universal", "darwin", "x64")
+
+    def test_android_filtered_on_linux(self):
+        assert _is_foreign_platform("@napi-rs/canvas-android-arm64", "linux", "x64")

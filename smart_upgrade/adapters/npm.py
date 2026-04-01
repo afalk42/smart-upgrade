@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import platform as _platform
 import re
 import shutil
 import subprocess
@@ -39,6 +40,101 @@ _GITHUB_RE = re.compile(r"(?:git\+)?https://github\.com/([^/]+)/([^/.]+)")
 _ADD_RE = re.compile(r"^add\s+(\S+)\s+(\S+)$")
 _CHANGE_RE = re.compile(r"^change\s+(\S+)\s+(\S+)\s+=>\s+(\S+)$")
 _REMOVE_RE = re.compile(r"^remove\s+(\S+)\s+(\S+)$")
+
+# ---------------------------------------------------------------------------
+# Platform-specific optional dependency filtering
+# ---------------------------------------------------------------------------
+# npm's ``--dry-run`` reports ALL optional dependencies across every platform
+# (darwin, win32, linux-arm64, etc.), not just those that would install on the
+# current system.  These are native binary distribution packages with ``os``
+# and ``cpu`` restrictions in their ``package.json``.  We detect them by
+# matching platform tokens in their names and filter out those clearly meant
+# for a different OS or architecture.
+#
+# Only *new* packages (``current_version == "(new)"``) are filtered.  Packages
+# that show a version change are already installed and therefore on the right
+# platform.
+
+# Package-name segment → Node.js ``process.platform`` equivalent.
+_NAME_OS_SEGMENTS: dict[str, str] = {
+    "win32": "win32",
+    "windows": "win32",
+    "darwin": "darwin",
+    "linux": "linux",
+    "linuxmusl": "linux",   # musl libc variant of linux
+    "android": "android",
+    "freebsd": "freebsd",
+}
+
+# Package-name segment → Node.js ``process.arch`` equivalent.
+_NAME_ARCH_SEGMENTS: dict[str, str] = {
+    "x64": "x64",
+    "x86_64": "x64",
+    "amd64": "x64",
+    "arm64": "arm64",
+    "aarch64": "arm64",
+    "arm": "arm",
+    "ia32": "ia32",
+    "x86": "ia32",
+    "s390x": "s390x",
+    "ppc64": "ppc64",
+    "riscv64": "riscv64",
+    "wasm32": "wasm32",
+}
+
+
+def _detect_local_platform() -> tuple[str, str]:
+    """Detect the local OS and architecture using Python's platform module.
+
+    Returns a ``(os, arch)`` tuple using Node.js naming conventions so
+    they can be compared against package-name segments.
+    """
+    sys_name = _platform.system().lower()
+    machine = _platform.machine().lower()
+
+    os_name = {
+        "darwin": "darwin",
+        "linux": "linux",
+        "windows": "win32",
+    }.get(sys_name, sys_name)
+
+    arch = {
+        "x86_64": "x64",
+        "amd64": "x64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+        "armv7l": "arm",
+    }.get(machine, machine)
+
+    return os_name, arch
+
+
+def _is_foreign_platform(name: str, local_os: str, local_arch: str) -> bool:
+    """Return True if *name* contains platform tokens for a different system.
+
+    Splits the package name on ``-`` and ``/`` into segments, then checks
+    each segment against known OS and architecture tokens.  If the name
+    contains an OS token that does not match *local_os*, or an arch token
+    that does not match *local_arch*, the package is considered foreign.
+
+    Returns False (keep the package) when:
+    - The name contains no platform tokens at all.
+    - All detected OS tokens match *local_os*.
+    - All detected arch tokens match *local_arch*.
+    """
+    segments = set(re.split(r"[-/]", name.lower()))
+
+    # Detect OS tokens in the name.
+    found_os = {_NAME_OS_SEGMENTS[s] for s in segments if s in _NAME_OS_SEGMENTS}
+    if found_os and local_os not in found_os:
+        return True
+
+    # Detect arch tokens in the name.
+    found_arch = {_NAME_ARCH_SEGMENTS[s] for s in segments if s in _NAME_ARCH_SEGMENTS}
+    if found_arch and local_arch not in found_arch:
+        return True
+
+    return False
 
 
 class NpmAdapter:
@@ -124,13 +220,35 @@ class NpmAdapter:
             check=False,
         )
 
-        upgrades = self._parse_dryrun_lines(result.stdout)
+        all_upgrades = self._parse_dryrun_lines(result.stdout)
 
-        if not upgrades and result.returncode != 0:
+        if not all_upgrades and result.returncode != 0:
             stderr = result.stderr.strip() if result.stderr else ""
             raise RuntimeError(
                 f"`npm install --dry-run` failed (exit {result.returncode})"
                 + (f": {stderr}" if stderr else "")
+            )
+
+        # Filter out platform-specific optional deps for other OS/arch.
+        # Only new packages are candidates — already-installed packages
+        # (version changes / removals) are obviously for the right platform.
+        local_os, local_arch = _detect_local_platform()
+        upgrades: list[PendingUpgrade] = []
+        filtered_count = 0
+        for pkg in all_upgrades:
+            if (
+                pkg.current_version == "(new)"
+                and _is_foreign_platform(pkg.name, local_os, local_arch)
+            ):
+                filtered_count += 1
+                continue
+            upgrades.append(pkg)
+
+        if filtered_count:
+            logger.info(
+                "Filtered %d platform-specific optional deps for other "
+                "OS/arch (local: %s/%s)",
+                filtered_count, local_os, local_arch,
             )
 
         # Enrich with metadata from the registry.
