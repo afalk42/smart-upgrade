@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart-upgrade"
-version = "0.2.0"
+version = "0.3.0"
 description = "Security-aware system package upgrade tool powered by Claude AI"
 readme = "README.md"
 license = {text = "MIT"}
@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 authors = [
     {name = "Alexander Falk"},
 ]
-keywords = ["security", "upgrade", "apt", "brew", "supply-chain", "claude"]
+keywords = ["security", "upgrade", "apt", "brew", "npm", "supply-chain", "claude"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",

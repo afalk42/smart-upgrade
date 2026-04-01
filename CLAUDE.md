@@ -6,9 +6,10 @@ This file provides context for Claude Code and other AI agents working on the
 ## Project Overview
 
 `smart-upgrade` is a security-aware CLI tool that wraps system package managers
-(`apt` on Debian/Ubuntu, `brew` on macOS) with an AI-powered security review
-layer. It uses the Claude CLI programmatically to analyze pending upgrades for
-supply-chain threats before installing them.
+(`apt` on Debian/Ubuntu, `brew` on macOS, `npm` for global Node.js packages)
+with an AI-powered security review layer. It uses the Claude CLI
+programmatically to analyze pending upgrades for supply-chain threats before
+installing them.
 
 **Key design document:** `SPECIFICATION.md` contains the full specification,
 including architecture, data models, execution flow, and threat model. Read it
@@ -17,7 +18,7 @@ before making architectural changes.
 ## Tech Stack
 
 - **Supported platforms:** macOS (Homebrew), Debian, Ubuntu, Raspberry Pi OS,
-  and other Debian-based distributions (APT)
+  and other Debian-based distributions (APT), npm global packages (cross-platform)
 - **Language:** Python 3.10+ (uses `from __future__ import annotations`)
 - **Dependencies (runtime):** `pyyaml`, `rich` -- deliberately minimal
 - **Dependencies (dev):** `pytest`, `pytest-mock`
@@ -31,7 +32,7 @@ before making architectural changes.
 cli.py (entry point, orchestration)
   -> config.py (YAML config loading)
   -> platform_detect.py (OS detection)
-  -> adapters/{apt,brew}.py (package manager wrappers)
+  -> adapters/{apt,brew,npm}.py (package manager wrappers)
   -> analysis/engine.py (3-layer security analysis orchestrator)
        -> analysis/claude_invoker.py (claude CLI wrapper)
        -> analysis/threat_intel.py (Brave/OSV/NVD API clients)
@@ -48,7 +49,7 @@ engine, adapters, and UI modules do not call each other directly.
 
 1. **Never run as root.** The tool always runs as the regular user. Only the
    APT adapter invokes `sudo` internally for `apt update` and `apt upgrade`.
-   Homebrew needs no elevation. See SPECIFICATION.md Section 4.0 and 13.4.
+   Homebrew and npm need no elevation. See SPECIFICATION.md Section 4.0 and 13.4.
 
 2. **Claude CLI is required.** There is no `--skip-analysis` flag. If `claude`
    is not on `$PATH`, the tool exits with an error. Users who want to skip
@@ -130,6 +131,7 @@ Test fixtures live in `tests/fixtures/`.
 | `platform_detect.py` | OS detection | Reads `/etc/os-release` on Linux, `platform.system()` for macOS |
 | `adapters/apt.py` | APT wrapper | Parses `apt list --upgradable`, enriches with origin via `apt-cache policy` and metadata via `apt show` (batched), changelog with GitHub fallback, uses `sudo` internally |
 | `adapters/brew.py` | Brew wrapper | Parses `brew outdated --json=v2`, enriches metadata via `brew info`, fetches GitHub release notes for changelogs |
+| `adapters/npm.py` | npm wrapper | Two modes: targeted (`--npm pkg@ver`) parses `npm install --dry-run` text output, global (`--npm`) parses `npm outdated --json`. Filters foreign-platform optional deps by OS/arch/libc. Enriches metadata via `npm view --json`, changelogs via GitHub API |
 | `analysis/engine.py` | Analysis orchestrator | Runs Layers A/B/C, merges results |
 | `analysis/claude_invoker.py` | Claude CLI wrapper | `claude -p --model <model>`, retry logic, JSON parsing |
 | `analysis/threat_intel.py` | Threat intel clients | Brave Search, OSV.dev, NVD -- all via `urllib.request`. OSV only for valid ecosystems (Debian, PyPI, etc. -- not Homebrew) |
@@ -263,3 +265,43 @@ Test fixtures live in `tests/fixtures/`.
   `threat_intel.py` parse structured error bodies from API responses (e.g.,
   Brave's `error.detail` field) for clearer warning messages. Always catch
   `HTTPError` separately from generic `URLError` to extract these details.
+- **npm ``--dry-run`` output format.**  ``npm install -g <pkg> --dry-run``
+  does NOT emit structured JSON with package arrays for global installs.
+  Instead it prints **text progress lines** (``add <name> <version>``,
+  ``change <name> <old> => <new>``, ``remove <name> <version>``) followed
+  by a JSON summary containing only counts.  The npm adapter parses the
+  text lines via regexes (``_ADD_RE``, ``_CHANGE_RE``, ``_REMOVE_RE``),
+  not the JSON.  The ``--json`` flag is deliberately NOT passed in targeted
+  mode.  Lines where ``old == new`` are reinstalls and are filtered out.
+- **npm ``outdated`` exit code.**  ``npm outdated -g --json`` exits with
+  code 1 when outdated packages exist (valid JSON on stdout).  The adapter
+  uses ``check=False`` and validates JSON rather than the return code.
+- **npm platform-specific optional deps.**  ``npm install --dry-run``
+  reports ALL optional dependencies across every platform (darwin, win32,
+  linux-arm64, wasm32, etc.), not just those that would install on the
+  current system.  The adapter detects OS, architecture, and C library
+  (glibc vs musl) tokens in package names via ``_is_foreign_platform()``
+  and filters out packages meant for a different platform.  Only packages
+  with ``current_version == "(new)"`` are filtered — version changes of
+  already-installed packages are obviously on the right platform.  The
+  libc detection uses ``ctypes.util.find_library("c")`` to distinguish
+  musl from glibc on Linux.
+- **npm targeted mode is atomic.**  In targeted mode (``--npm pkg@ver``),
+  npm resolves the entire dependency tree as a unit.  Individual transitive
+  dependencies cannot be cherry-picked for upgrade.  The decision flow in
+  ``_collect_npm_targeted_decisions()`` presents a single yes/no prompt
+  based on the worst recommendation across all packages.  The upgrade call
+  uses ``adapter.upgrade()`` with no package list (not individual names),
+  which runs the original ``npm install -g <target>`` command.
+- **npm removed packages skipped.**  Packages that would be removed by the
+  upgrade (``new_version == "(removed)"``) are excluded from the returned
+  list entirely.  A removal cannot introduce a supply-chain threat, so
+  there is nothing to security-review.
+- **npm ``refresh_index()`` is a no-op.**  Unlike APT and Homebrew, npm has
+  no local index to refresh — the registry is always live.
+- **npm changelog retrieval.**  Same pattern as the Homebrew adapter:
+  extract ``repository.url`` from ``npm view --json``, parse to
+  ``owner/repo``, fetch GitHub Releases API.  The ``repository`` field
+  may be a dict with a ``url`` key or a plain string — both are handled.
+  The URL often has a ``git+https://`` prefix and ``.git`` suffix which
+  the ``_GITHUB_RE`` regex handles.

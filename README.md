@@ -6,7 +6,15 @@ Instead of blindly running `apt upgrade` or `brew upgrade`, `smart-upgrade` inse
 
 ![Screenshot](artifacts/screenshot.png)
 
-## What's New in 0.2.0
+## What's New in 0.3.0
+
+- **npm support (`--npm`)**: Security-audit npm global package installs before they happen. Supports both targeted mode (`smart-upgrade --npm openclaw@latest`) and global audit mode (`smart-upgrade --npm`). In targeted mode, the full transitive dependency tree is resolved via `npm install --dry-run` and every new, changed, or removed dependency is analysed through the same three-layer security pipeline used for apt and brew. Platform-specific optional dependencies (wrong OS, architecture, or C library) are automatically filtered out, and the install decision is all-or-nothing since npm resolves the dependency tree atomically. OSV.dev has native npm ecosystem support, giving npm packages the best threat intelligence coverage of any adapter.
+- **Threat intelligence coverage for npm**: npm packages benefit from all three intelligence sources: OSV.dev (native `npm` ecosystem support), NVD/CVE, and Brave Search. Homebrew packages are not tracked by OSV, so npm gets strictly better coverage.
+
+### Previous releases
+
+<details>
+<summary>0.2.0</summary>
 
 - **Origin-based auto-whitelisting (APT)**: Trust all packages from official Ubuntu/Debian repositories with a single config line (`apt-trusted-origins: [Ubuntu]`) instead of maintaining long name-based lists. Third-party packages (PPAs, Brave, etc.) still get full security analysis.
 - **APT metadata enrichment**: Package maintainer and homepage are now populated in the audit log via a batched `apt show` call, with a source-package fallback for packages (like ESM variants) whose binary metadata omits Homepage.
@@ -15,10 +23,12 @@ Instead of blindly running `apt upgrade` or `brew upgrade`, `smart-upgrade` inse
 - **Color-coded analysis progress**: During security analysis, each non-whitelisted package now shows a Rich-formatted progress line (`Evaluating possible upgrade: <name> <old> -> <new> (N/M)`) instead of relying solely on log messages.
 - **Default log level changed to `warning`**: The `[INFO]` log messages are no longer shown by default since the new Rich progress messages provide better user feedback. Use `--log-level info` or `--log-level debug` for verbose output.
 
+</details>
+
 ## How It Works
 
-1. **Refreshes** your package index (`apt update` / `brew update`)
-2. **Lists** all available upgrades
+1. **Refreshes** your package index (`apt update` / `brew update` / npm registry)
+2. **Lists** all available upgrades (or resolves the npm dependency tree via `--dry-run`)
 3. **Analyzes** each package through three security layers:
    - **Layer A** -- Claude reviews the full upgrade list for anomalies (typosquatting, unexpected version jumps, unusual packages)
    - **Layer B** -- Threat intelligence from Brave Search, OSV.dev, and NVD/CVE databases, synthesized by Claude
@@ -33,11 +43,13 @@ Instead of blindly running `apt upgrade` or `brew upgrade`, `smart-upgrade` inse
 |---|---|---|
 | macOS | Homebrew | Formulae and Casks |
 | Debian / Ubuntu | APT | `.deb` packages |
+| Any (macOS / Linux) | npm | Global packages and their transitive dependencies |
 
 ## Requirements
 
 - **Python 3.10+**
 - **Claude Code CLI** (`claude`) installed and available on your `$PATH` ([installation guide](https://docs.anthropic.com/en/docs/claude-code))
+- **npm** (only required for `--npm` mode -- comes with Node.js)
 - **Brave Search API key** (optional, for threat intelligence -- [get one here](https://brave.com/search/api/))
 - **NVD API key** (optional, improves rate limits -- [request here](https://nvd.nist.gov/developers/request-an-api-key))
 
@@ -92,7 +104,7 @@ pip install pyyaml rich       # install dependencies
 
 ```bash
 smart-upgrade --version
-# smart-upgrade 0.2.0
+# smart-upgrade 0.3.0
 ```
 
 ## Usage
@@ -135,6 +147,25 @@ smart-upgrade --model opus      # default, most thorough
 smart-upgrade --packages curl openssl git
 ```
 
+### Audit an npm global package install
+
+```bash
+# Audit a specific package before installing/upgrading
+smart-upgrade --npm openclaw@latest
+
+# Dry-run only (analyse but don't install)
+smart-upgrade --npm openclaw@latest --dry-run
+
+# Audit all outdated global npm packages
+smart-upgrade --npm
+```
+
+In targeted mode (`--npm <package@version>`), the tool resolves the full transitive dependency tree, diffs it against what's currently installed, and runs the three-layer security analysis on every new or changed dependency. This is the attack surface that supply-chain attacks like the poisoned `axios` exploit -- a malicious transitive dependency introduced through a version bump.
+
+Platform-specific optional dependencies (packages for a different OS, CPU architecture, or C library) are automatically filtered out so they don't waste analysis cycles. Removed dependencies are also skipped since they can't introduce a threat.
+
+Because npm resolves the dependency tree atomically, the install decision is all-or-nothing: you either accept the entire tree or decline. Individual transitive dependencies cannot be cherry-picked.
+
 ### View your whitelist
 
 ```bash
@@ -150,6 +181,7 @@ options:
   -h, --help                 Show help message and exit
   -y, --yes                  Auto-approve when no security concerns found
   --dry-run                  Analyze only, don't upgrade
+  --npm [PACKAGE@VERSION]    Audit npm global packages (targeted or all)
   --model MODEL              Claude model: opus (default), sonnet, haiku
   --review-depth DEPTH       Source review depth: light (default)
   --config PATH              Config file path
@@ -215,6 +247,9 @@ whitelist:
     - firefox
     - google-chrome
     - visual-studio-code
+  npm:
+    - typescript
+    - "@angular/*"
 
 # Threat intelligence sources
 threat_intel:
@@ -248,7 +283,7 @@ export NVD_API_KEY="your-nvd-api-key"
 
 - **Brave Search**: Required for web-based threat intelligence. Without it, Layer B falls back to NVD only. If the key is set but invalid, you'll see a warning with the specific error from Brave's API.
 - **NVD**: Optional but recommended. Without it, NVD queries are rate-limited (~5 requests per 30 seconds).
-- **OSV.dev**: Free, no API key required. Note: OSV only covers packages in supported ecosystems (Debian, PyPI, npm, etc.). Homebrew formulae are not tracked by OSV, so NVD provides the vulnerability coverage for brew packages.
+- **OSV.dev**: Free, no API key required. OSV covers packages in specific ecosystems (Debian, PyPI, npm, etc.). Homebrew formulae are not tracked by OSV, so NVD provides the vulnerability coverage for brew packages. npm packages have native OSV support.
 
 ## Audit Logs
 
@@ -350,6 +385,7 @@ smart_upgrade/
     base.py              # Adapter protocol
     apt.py               # APT adapter (Debian/Ubuntu)
     brew.py              # Homebrew adapter (macOS)
+    npm.py               # npm adapter (global packages)
   analysis/
     engine.py            # Three-layer analysis orchestrator
     claude_invoker.py    # Claude CLI wrapper
