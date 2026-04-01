@@ -166,7 +166,9 @@ class TestListTargeted:
         assert "openclaw" in names
         assert "axios" in names
         assert "plain-crypto-js" in names
-        assert "old-dep" in names
+
+        # Removed packages are excluded (not a security concern).
+        assert "old-dep" not in names
 
         # Check the new transitive dep.
         new_dep = next(p for p in packages if p.name == "plain-crypto-js")
@@ -177,11 +179,6 @@ class TestListTargeted:
         axios = next(p for p in packages if p.name == "axios")
         assert axios.current_version == "1.14.0"
         assert axios.new_version == "1.14.1"
-
-        # Check the removed dep.
-        removed = next(p for p in packages if p.name == "old-dep")
-        assert removed.current_version == "0.5.0"
-        assert removed.new_version == "(removed)"
 
     def test_filters_same_version_changes(self):
         """Lines where old == new (reinstalls) should be filtered out."""
@@ -231,7 +228,7 @@ class TestListTargeted:
     def test_scoped_package_names(self):
         """Scoped packages like @scope/name are parsed correctly.
 
-        Platform-specific adds are filtered, but changes/removes are kept.
+        Platform-specific adds are filtered, removals are excluded.
         """
         stdout = (
             "add @img/sharp-linux-x64 0.34.5\n"
@@ -243,11 +240,12 @@ class TestListTargeted:
 
         with patch("smart_upgrade.adapters.npm.subprocess.run") as mock_run:
             mock_run.return_value = _mock_run(returncode=0, stdout=stdout)
-            # Simulate linux-x64 so the add line is kept.
-            with patch("smart_upgrade.adapters.npm._detect_local_platform", return_value=("linux", "x64")):
+            with patch("smart_upgrade.adapters.npm._detect_local_platform", return_value=("linux", "x64", "gnu")):
                 packages = adapter.list_upgradable()
 
-        assert len(packages) == 3
+        # 2 kept: the add (matches linux-x64) and the change.
+        # The removal is excluded.
+        assert len(packages) == 2
 
         added = next(p for p in packages if p.name == "@img/sharp-linux-x64")
         assert added.current_version == "(new)"
@@ -257,32 +255,35 @@ class TestListTargeted:
         assert changed.current_version == "0.73.0"
         assert changed.new_version == "0.81.0"
 
-        removed = next(p for p in packages if p.name == "@aws-sdk/client-bedrock")
-        assert removed.current_version == "3.1019.0"
-        assert removed.new_version == "(removed)"
+        # Removal is excluded.
+        names = {p.name for p in packages}
+        assert "@aws-sdk/client-bedrock" not in names
 
     def test_filters_foreign_platform_packages(self):
-        """New packages for other OS/arch are filtered; changes are kept."""
+        """New packages for other OS/arch/libc are filtered; changes kept."""
         stdout = (
             "change openclaw 1.2.0 => 1.3.0\n"
             "change sqlite-vec-linux-x64 0.1.7 => 0.1.9\n"
             "add sqlite-vec-darwin-arm64 0.1.9\n"
             "add sqlite-vec-darwin-x64 0.1.9\n"
             "add sqlite-vec-linux-arm64 0.1.9\n"
-            "add sqlite-vec-linux-x64 0.1.9\n"          # matches linux-x64
+            "add sqlite-vec-linux-x64 0.1.9\n"          # matches linux-x64-gnu
             "add sqlite-vec-windows-x64 0.1.9\n"
             "add @img/sharp-win32-x64 0.34.5\n"
             "add @img/sharp-darwin-arm64 0.34.5\n"
-            "add @img/sharp-linux-x64 0.34.5\n"          # matches linux-x64
+            "add @img/sharp-linux-x64 0.34.5\n"          # matches linux-x64-gnu
+            "add @img/sharp-linuxmusl-x64 0.34.5\n"      # musl → filtered on glibc
             "add @img/sharp-wasm32 0.34.5\n"
-            "add @emnapi/runtime 1.9.1\n"                 # no platform tokens
+            "add @napi-rs/canvas-linux-x64-musl 0.1.97\n" # musl → filtered on glibc
+            "add @emnapi/runtime 1.9.1\n"                 # no platform tokens → kept
+            "remove @smithy/abort-controller 4.2.12\n"    # removal → excluded
         )
         with patch("smart_upgrade.adapters.npm.shutil.which", return_value="/usr/local/bin/npm"):
             adapter = NpmAdapter(target_package="openclaw@latest")
 
         with patch("smart_upgrade.adapters.npm.subprocess.run") as mock_run:
             mock_run.return_value = _mock_run(returncode=0, stdout=stdout)
-            with patch("smart_upgrade.adapters.npm._detect_local_platform", return_value=("linux", "x64")):
+            with patch("smart_upgrade.adapters.npm._detect_local_platform", return_value=("linux", "x64", "gnu")):
                 packages = adapter.list_upgradable()
 
         names = {p.name for p in packages}
@@ -291,13 +292,12 @@ class TestListTargeted:
         assert "openclaw" in names
         assert "sqlite-vec-linux-x64" in names
 
-        # New packages matching linux-x64 are kept.
+        # New packages matching linux-x64 (no libc restriction) are kept.
         new_names = {p.name for p in packages if p.current_version == "(new)"}
-        assert "sqlite-vec-linux-x64" in new_names or "sqlite-vec-linux-x64" in names
         assert "@img/sharp-linux-x64" in new_names
         assert "@emnapi/runtime" in new_names  # no platform tokens → kept
 
-        # Foreign platform packages are filtered out.
+        # Foreign OS/arch packages are filtered out.
         assert "sqlite-vec-darwin-arm64" not in names
         assert "sqlite-vec-darwin-x64" not in names
         assert "sqlite-vec-windows-x64" not in names
@@ -305,6 +305,13 @@ class TestListTargeted:
         assert "@img/sharp-win32-x64" not in names
         assert "@img/sharp-darwin-arm64" not in names
         assert "@img/sharp-wasm32" not in names
+
+        # musl packages are filtered on glibc systems.
+        assert "@img/sharp-linuxmusl-x64" not in names
+        assert "@napi-rs/canvas-linux-x64-musl" not in names
+
+        # Removals are excluded entirely.
+        assert "@smithy/abort-controller" not in names
 
     def test_does_not_pass_json_flag(self):
         """Targeted mode should NOT pass --json (we parse text lines)."""
@@ -526,7 +533,7 @@ class TestIsForeignPlatform:
         assert not _is_foreign_platform("@img/sharp-darwin-arm64", "darwin", "arm64")
 
     def test_linuxmusl_matches_linux_os(self):
-        """linuxmusl is still linux for OS matching purposes."""
+        """linuxmusl is still linux for OS matching purposes (without libc check)."""
         assert not _is_foreign_platform("@img/sharp-linuxmusl-x64", "linux", "x64")
         assert _is_foreign_platform("@img/sharp-linuxmusl-x64", "darwin", "arm64")
 
@@ -557,8 +564,40 @@ class TestIsForeignPlatform:
     def test_wrong_os_right_arch(self):
         assert _is_foreign_platform("@napi-rs/canvas-darwin-x64", "linux", "x64")
 
-    def test_right_os_right_arch(self):
+    def test_right_os_right_arch_no_libc(self):
+        """Without a local_libc, libc tokens are not checked."""
         assert not _is_foreign_platform("@napi-rs/canvas-linux-x64-musl", "linux", "x64")
+
+    # -- libc matching (Linux-specific) --
+
+    def test_musl_package_on_glibc(self):
+        assert _is_foreign_platform("@napi-rs/canvas-linux-x64-musl", "linux", "x64", "gnu")
+        assert _is_foreign_platform("@img/sharp-linuxmusl-x64", "linux", "x64", "gnu")
+        assert _is_foreign_platform("@img/sharp-libvips-linuxmusl-x64", "linux", "x64", "gnu")
+        assert _is_foreign_platform("@mariozechner/clipboard-linux-x64-musl", "linux", "x64", "gnu")
+
+    def test_musl_package_on_musl(self):
+        assert not _is_foreign_platform("@napi-rs/canvas-linux-x64-musl", "linux", "x64", "musl")
+        assert not _is_foreign_platform("@img/sharp-linuxmusl-x64", "linux", "x64", "musl")
+
+    def test_gnu_package_on_glibc(self):
+        assert not _is_foreign_platform("@napi-rs/canvas-linux-arm64-gnu", "linux", "arm64", "gnu")
+
+    def test_gnu_package_on_musl(self):
+        assert _is_foreign_platform("@napi-rs/canvas-linux-arm64-gnu", "linux", "arm64", "musl")
+
+    def test_gnueabihf_is_gnu_libc(self):
+        assert not _is_foreign_platform("@napi-rs/canvas-linux-arm-gnueabihf", "linux", "arm", "gnu")
+        assert _is_foreign_platform("@napi-rs/canvas-linux-arm-gnueabihf", "linux", "arm", "musl")
+
+    def test_msvc_ignored_on_linux(self):
+        """msvc is only relevant on Windows — on linux the OS mismatch catches it first."""
+        assert _is_foreign_platform("@napi-rs/canvas-win32-x64-msvc", "linux", "x64", "gnu")
+
+    def test_no_libc_token_kept_on_glibc(self):
+        """Packages without libc tokens are kept regardless of local libc."""
+        assert not _is_foreign_platform("@img/sharp-linux-x64", "linux", "x64", "gnu")
+        assert not _is_foreign_platform("sqlite-vec-linux-x64", "linux", "x64", "gnu")
 
     # -- Edge cases --
 

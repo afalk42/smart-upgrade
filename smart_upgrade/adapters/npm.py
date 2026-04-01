@@ -61,7 +61,6 @@ _NAME_OS_SEGMENTS: dict[str, str] = {
     "windows": "win32",
     "darwin": "darwin",
     "linux": "linux",
-    "linuxmusl": "linux",   # musl libc variant of linux
     "android": "android",
     "freebsd": "freebsd",
 }
@@ -82,12 +81,29 @@ _NAME_ARCH_SEGMENTS: dict[str, str] = {
     "wasm32": "wasm32",
 }
 
+# Package-name segments that indicate a specific C library variant.
+# On standard Debian/Ubuntu (glibc), ``linuxmusl`` packages will not be
+# installed — npm selects the matching libc variant at install time.
+# The compound token ``linuxmusl`` appears as a single hyphen-delimited
+# segment in names like ``@img/sharp-linuxmusl-x64``.
+_NAME_LIBC_SEGMENTS: dict[str, str] = {
+    "musl": "musl",
+    "linuxmusl": "musl",
+    "gnu": "gnu",
+    "gnueabihf": "gnu",
+    "msvc": "msvc",
+}
 
-def _detect_local_platform() -> tuple[str, str]:
-    """Detect the local OS and architecture using Python's platform module.
 
-    Returns a ``(os, arch)`` tuple using Node.js naming conventions so
-    they can be compared against package-name segments.
+def _detect_local_platform() -> tuple[str, str, str]:
+    """Detect the local OS, architecture, and C library.
+
+    Returns an ``(os, arch, libc)`` tuple using Node.js naming conventions
+    so they can be compared against package-name segments.
+
+    The *libc* value is ``"gnu"`` for standard glibc-based Linux (Debian,
+    Ubuntu, Fedora, etc.), ``"musl"`` for Alpine / musl-based distros,
+    and ``""`` for non-Linux systems (where libc filtering is irrelevant).
     """
     sys_name = _platform.system().lower()
     machine = _platform.machine().lower()
@@ -106,26 +122,56 @@ def _detect_local_platform() -> tuple[str, str]:
         "armv7l": "arm",
     }.get(machine, machine)
 
-    return os_name, arch
+    # Detect libc on Linux.
+    libc = ""
+    if os_name == "linux":
+        libc = _detect_linux_libc()
+
+    return os_name, arch, libc
 
 
-def _is_foreign_platform(name: str, local_os: str, local_arch: str) -> bool:
+def _detect_linux_libc() -> str:
+    """Return ``"musl"`` on Alpine / musl-based systems, else ``"gnu"``."""
+    import ctypes.util
+
+    # The musl dynamic linker is always named /lib/ld-musl-*.
+    # A fast check: see if the C library path contains "musl".
+    libc_path = ctypes.util.find_library("c")
+    if libc_path and "musl" in libc_path:
+        return "musl"
+    return "gnu"
+
+
+def _is_foreign_platform(
+    name: str,
+    local_os: str,
+    local_arch: str,
+    local_libc: str = "",
+) -> bool:
     """Return True if *name* contains platform tokens for a different system.
 
     Splits the package name on ``-`` and ``/`` into segments, then checks
-    each segment against known OS and architecture tokens.  If the name
-    contains an OS token that does not match *local_os*, or an arch token
-    that does not match *local_arch*, the package is considered foreign.
+    each segment against known OS, architecture, and libc tokens.  If the
+    name contains a token that does not match the local system, the package
+    is considered foreign.
 
     Returns False (keep the package) when:
     - The name contains no platform tokens at all.
     - All detected OS tokens match *local_os*.
     - All detected arch tokens match *local_arch*.
+    - All detected libc tokens match *local_libc* (Linux only).
     """
     segments = set(re.split(r"[-/]", name.lower()))
 
     # Detect OS tokens in the name.
-    found_os = {_NAME_OS_SEGMENTS[s] for s in segments if s in _NAME_OS_SEGMENTS}
+    # The compound segment "linuxmusl" implies OS=linux (handled here)
+    # AND libc=musl (handled below in libc check).
+    found_os: set[str] = set()
+    for s in segments:
+        if s in _NAME_OS_SEGMENTS:
+            found_os.add(_NAME_OS_SEGMENTS[s])
+        elif s == "linuxmusl":
+            found_os.add("linux")
     if found_os and local_os not in found_os:
         return True
 
@@ -133,6 +179,12 @@ def _is_foreign_platform(name: str, local_os: str, local_arch: str) -> bool:
     found_arch = {_NAME_ARCH_SEGMENTS[s] for s in segments if s in _NAME_ARCH_SEGMENTS}
     if found_arch and local_arch not in found_arch:
         return True
+
+    # Detect libc tokens in the name (Linux-specific).
+    if local_libc:
+        found_libc = {_NAME_LIBC_SEGMENTS[s] for s in segments if s in _NAME_LIBC_SEGMENTS}
+        if found_libc and local_libc not in found_libc:
+            return True
 
     return False
 
@@ -229,16 +281,28 @@ class NpmAdapter:
                 + (f": {stderr}" if stderr else "")
             )
 
-        # Filter out platform-specific optional deps for other OS/arch.
+        # Drop removed packages — a removal cannot introduce a supply-chain
+        # threat, so there is nothing to security-review.
+        removed = [p for p in all_upgrades if p.new_version == "(removed)"]
+        if removed:
+            logger.info(
+                "Skipping %d removed packages (not a security concern): %s",
+                len(removed),
+                ", ".join(p.name for p in removed),
+            )
+
+        # Filter out platform-specific optional deps for other OS/arch/libc.
         # Only new packages are candidates — already-installed packages
-        # (version changes / removals) are obviously for the right platform.
-        local_os, local_arch = _detect_local_platform()
+        # (version changes) are obviously for the right platform.
+        local_os, local_arch, local_libc = _detect_local_platform()
         upgrades: list[PendingUpgrade] = []
         filtered_count = 0
         for pkg in all_upgrades:
+            if pkg.new_version == "(removed)":
+                continue
             if (
                 pkg.current_version == "(new)"
-                and _is_foreign_platform(pkg.name, local_os, local_arch)
+                and _is_foreign_platform(pkg.name, local_os, local_arch, local_libc)
             ):
                 filtered_count += 1
                 continue
@@ -247,8 +311,8 @@ class NpmAdapter:
         if filtered_count:
             logger.info(
                 "Filtered %d platform-specific optional deps for other "
-                "OS/arch (local: %s/%s)",
-                filtered_count, local_os, local_arch,
+                "OS/arch/libc (local: %s/%s/%s)",
+                filtered_count, local_os, local_arch, local_libc or "n/a",
             )
 
         # Enrich with metadata from the registry.
