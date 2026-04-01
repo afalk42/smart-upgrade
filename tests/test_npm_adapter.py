@@ -147,8 +147,9 @@ class TestListOutdated:
 # ---------------------------------------------------------------------------
 
 class TestListTargeted:
-    def test_parses_dryrun_json(self):
-        dryrun_output = (FIXTURES / "npm_install_dryrun.json").read_text()
+    def test_parses_dryrun_text_lines(self):
+        """Parse real npm dry-run text output with add/change/remove lines."""
+        dryrun_output = (FIXTURES / "npm_install_dryrun.txt").read_text()
 
         with patch("smart_upgrade.adapters.npm.shutil.which", return_value="/usr/local/bin/npm"):
             adapter = NpmAdapter(target_package="openclaw@latest")
@@ -182,47 +183,91 @@ class TestListTargeted:
         assert removed.current_version == "0.5.0"
         assert removed.new_version == "(removed)"
 
-    def test_unparseable_output(self):
-        with patch("smart_upgrade.adapters.npm.shutil.which", return_value="/usr/local/bin/npm"):
-            adapter = NpmAdapter(target_package="openclaw@latest")
-
-        with patch("smart_upgrade.adapters.npm.subprocess.run") as mock_run:
-            mock_run.return_value = _mock_run(returncode=1, stdout="error stuff")
-            with pytest.raises(RuntimeError, match="unparseable output"):
-                adapter.list_upgradable()
-
-    def test_handles_progress_lines_before_json(self):
-        """npm sometimes emits text lines before the JSON object."""
-        dryrun_output = (FIXTURES / "npm_install_dryrun.json").read_text()
-        stdout_with_progress = (
-            "npm warn deprecated old-thing@1.0.0\n"
-            "added 0, changed 2, removed 1\n"
-            + dryrun_output
-        )
+    def test_filters_same_version_changes(self):
+        """Lines where old == new (reinstalls) should be filtered out."""
+        dryrun_output = (FIXTURES / "npm_install_dryrun.txt").read_text()
 
         with patch("smart_upgrade.adapters.npm.shutil.which", return_value="/usr/local/bin/npm"):
             adapter = NpmAdapter(target_package="openclaw@latest")
 
         with patch("smart_upgrade.adapters.npm.subprocess.run") as mock_run:
             mock_run.return_value = _mock_run(
-                returncode=0, stdout=stdout_with_progress,
+                returncode=0, stdout=dryrun_output,
             )
             packages = adapter.list_upgradable()
 
-        assert len(packages) == 4  # openclaw, axios, plain-crypto-js, old-dep
+        # @smithy/core 3.23.12 => 3.23.12 and lodash 4.17.21 => 4.17.21
+        # should NOT appear (same version = reinstall, not a real change).
+        pkg_names = {p.name for p in packages}
+        assert "@smithy/core" not in pkg_names
+        assert "lodash" not in pkg_names
 
-    def test_empty_change_set(self):
-        data = json.dumps({"add": [], "added": 0, "change": [], "changed": 0,
-                           "remove": [], "removed": 0})
-
+    def test_failure_raises(self):
         with patch("smart_upgrade.adapters.npm.shutil.which", return_value="/usr/local/bin/npm"):
             adapter = NpmAdapter(target_package="openclaw@latest")
 
         with patch("smart_upgrade.adapters.npm.subprocess.run") as mock_run:
-            mock_run.return_value = _mock_run(returncode=0, stdout=data)
+            mock_run.return_value = _mock_run(
+                returncode=1, stdout="", stderr="ERR! 404 Not Found"
+            )
+            with pytest.raises(RuntimeError, match="npm install --dry-run.*failed"):
+                adapter.list_upgradable()
+
+    def test_no_changes_returns_empty(self):
+        """When npm reports no add/change/remove lines, return empty list."""
+        stdout = (
+            "npm warn some warning\n"
+            '{"added": 0, "removed": 0, "changed": 0}\n'
+        )
+        with patch("smart_upgrade.adapters.npm.shutil.which", return_value="/usr/local/bin/npm"):
+            adapter = NpmAdapter(target_package="openclaw@latest")
+
+        with patch("smart_upgrade.adapters.npm.subprocess.run") as mock_run:
+            mock_run.return_value = _mock_run(returncode=0, stdout=stdout)
             packages = adapter.list_upgradable()
 
         assert packages == []
+
+    def test_scoped_package_names(self):
+        """Scoped packages like @scope/name are parsed correctly."""
+        stdout = (
+            "add @img/sharp-darwin-arm64 0.34.5\n"
+            "change @anthropic-ai/sdk 0.73.0 => 0.81.0\n"
+            "remove @aws-sdk/client-bedrock 3.1019.0\n"
+        )
+        with patch("smart_upgrade.adapters.npm.shutil.which", return_value="/usr/local/bin/npm"):
+            adapter = NpmAdapter(target_package="openclaw@latest")
+
+        with patch("smart_upgrade.adapters.npm.subprocess.run") as mock_run:
+            mock_run.return_value = _mock_run(returncode=0, stdout=stdout)
+            packages = adapter.list_upgradable()
+
+        assert len(packages) == 3
+
+        added = next(p for p in packages if p.name == "@img/sharp-darwin-arm64")
+        assert added.current_version == "(new)"
+        assert added.new_version == "0.34.5"
+
+        changed = next(p for p in packages if p.name == "@anthropic-ai/sdk")
+        assert changed.current_version == "0.73.0"
+        assert changed.new_version == "0.81.0"
+
+        removed = next(p for p in packages if p.name == "@aws-sdk/client-bedrock")
+        assert removed.current_version == "3.1019.0"
+        assert removed.new_version == "(removed)"
+
+    def test_does_not_pass_json_flag(self):
+        """Targeted mode should NOT pass --json (we parse text lines)."""
+        with patch("smart_upgrade.adapters.npm.shutil.which", return_value="/usr/local/bin/npm"):
+            adapter = NpmAdapter(target_package="openclaw@latest")
+
+        with patch("smart_upgrade.adapters.npm.subprocess.run") as mock_run:
+            mock_run.return_value = _mock_run(returncode=0, stdout="")
+            adapter.list_upgradable()
+
+        cmd = mock_run.call_args[0][0]
+        assert "--json" not in cmd
+        assert "--dry-run" in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -337,24 +382,60 @@ class TestGetChangelog:
 
 
 # ---------------------------------------------------------------------------
-# _parse_npm_json
+# _parse_dryrun_lines
 # ---------------------------------------------------------------------------
 
-class TestParseNpmJson:
-    def test_parses_clean_json(self):
-        data = '{"add": [], "change": []}'
-        result = NpmAdapter._parse_npm_json(data)
-        assert result == {"add": [], "change": []}
+class TestParseDryrunLines:
+    def test_parses_add_lines(self):
+        stdout = "add express 4.21.2\nadd lodash 4.17.21\n"
+        result = NpmAdapter._parse_dryrun_lines(stdout)
+        assert len(result) == 2
+        assert result[0].name == "express"
+        assert result[0].current_version == "(new)"
+        assert result[0].new_version == "4.21.2"
 
-    def test_parses_with_prefix_lines(self):
-        data = 'npm warn deprecated\nsome text\n{"add": [], "change": []}'
-        result = NpmAdapter._parse_npm_json(data)
-        assert result == {"add": [], "change": []}
+    def test_parses_change_lines(self):
+        stdout = "change axios 1.14.0 => 1.14.1\n"
+        result = NpmAdapter._parse_dryrun_lines(stdout)
+        assert len(result) == 1
+        assert result[0].name == "axios"
+        assert result[0].current_version == "1.14.0"
+        assert result[0].new_version == "1.14.1"
 
-    def test_returns_none_for_no_json(self):
-        result = NpmAdapter._parse_npm_json("no json here at all")
-        assert result is None
+    def test_parses_remove_lines(self):
+        stdout = "remove old-dep 0.5.0\n"
+        result = NpmAdapter._parse_dryrun_lines(stdout)
+        assert len(result) == 1
+        assert result[0].name == "old-dep"
+        assert result[0].new_version == "(removed)"
 
-    def test_returns_none_for_invalid_json(self):
-        result = NpmAdapter._parse_npm_json("{broken json")
-        assert result is None
+    def test_filters_same_version_changes(self):
+        stdout = "change lodash 4.17.21 => 4.17.21\n"
+        result = NpmAdapter._parse_dryrun_lines(stdout)
+        assert result == []
+
+    def test_ignores_non_matching_lines(self):
+        stdout = (
+            "npm warn deprecated something\n"
+            "add express 4.21.2\n"
+            '{"added": 1, "removed": 0, "changed": 0}\n'
+        )
+        result = NpmAdapter._parse_dryrun_lines(stdout)
+        assert len(result) == 1
+        assert result[0].name == "express"
+
+    def test_scoped_packages(self):
+        stdout = "add @img/sharp-darwin-arm64 0.34.5\n"
+        result = NpmAdapter._parse_dryrun_lines(stdout)
+        assert len(result) == 1
+        assert result[0].name == "@img/sharp-darwin-arm64"
+
+    def test_empty_input(self):
+        assert NpmAdapter._parse_dryrun_lines("") == []
+        assert NpmAdapter._parse_dryrun_lines("\n\n") == []
+
+    def test_beta_versions(self):
+        stdout = "add @lydell/node-pty 1.2.0-beta.3\n"
+        result = NpmAdapter._parse_dryrun_lines(stdout)
+        assert len(result) == 1
+        assert result[0].new_version == "1.2.0-beta.3"

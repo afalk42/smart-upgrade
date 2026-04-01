@@ -31,6 +31,15 @@ logger = logging.getLogger(__name__)
 # including git+https:// and .git suffixes.
 _GITHUB_RE = re.compile(r"(?:git\+)?https://github\.com/([^/]+)/([^/.]+)")
 
+# Text-line patterns emitted by `npm install --dry-run`.
+# npm prints these BEFORE the final JSON summary.
+#   add <name> <version>
+#   change <name> <old_version> => <new_version>
+#   remove <name> <version>
+_ADD_RE = re.compile(r"^add\s+(\S+)\s+(\S+)$")
+_CHANGE_RE = re.compile(r"^change\s+(\S+)\s+(\S+)\s+=>\s+(\S+)$")
+_REMOVE_RE = re.compile(r"^remove\s+(\S+)\s+(\S+)$")
+
 
 class NpmAdapter:
     """Package-manager adapter wrapping the ``npm`` CLI for global packages."""
@@ -90,67 +99,39 @@ class NpmAdapter:
     # --- targeted mode ------------------------------------------------
 
     def _list_targeted(self) -> list[PendingUpgrade]:
-        """Dry-run install for a specific package and diff the tree."""
+        """Dry-run install for a specific package and diff the tree.
+
+        ``npm install -g <pkg> --dry-run`` emits text progress lines to
+        stdout with the actual package changes, followed by a JSON summary
+        that only contains counts (``added``, ``changed``, ``removed``).
+        We parse the **text lines** — not the JSON — to extract details.
+
+        Line formats::
+
+            add <name> <version>
+            change <name> <old_version> => <new_version>
+            remove <name> <version>
+
+        Lines where ``old_version == new_version`` are reinstalls (not
+        real changes) and are filtered out.
+        """
         assert self._target is not None
 
         result = subprocess.run(
-            [self._npm, "install", "-g", self._target, "--dry-run", "--json"],
+            [self._npm, "install", "-g", self._target, "--dry-run"],
             capture_output=True,
             text=True,
             check=False,
         )
 
-        data = self._parse_npm_json(result.stdout)
-        if data is None:
+        upgrades = self._parse_dryrun_lines(result.stdout)
+
+        if not upgrades and result.returncode != 0:
+            stderr = result.stderr.strip() if result.stderr else ""
             raise RuntimeError(
-                f"`npm install --dry-run` produced unparseable output "
-                f"(exit {result.returncode})"
+                f"`npm install --dry-run` failed (exit {result.returncode})"
+                + (f": {stderr}" if stderr else "")
             )
-
-        upgrades: list[PendingUpgrade] = []
-
-        # "add" — new packages being introduced.
-        for entry in data.get("add", []):
-            name = entry.get("name") if isinstance(entry, dict) else None
-            version = entry.get("version", "?") if isinstance(entry, dict) else "?"
-            if name:
-                upgrades.append(PendingUpgrade(
-                    name=name,
-                    current_version="(new)",
-                    new_version=version,
-                    source=PackageSource.NPM,
-                ))
-
-        # "change" — version changes (includes the top-level package).
-        for entry in data.get("change", []):
-            if not isinstance(entry, dict):
-                continue
-            from_info = entry.get("from", {})
-            to_info = entry.get("to", {})
-            name = (to_info.get("name") or from_info.get("name") or "")
-            old_ver = from_info.get("version", "?")
-            new_ver = to_info.get("version", "?")
-            if name and old_ver != new_ver:
-                upgrades.append(PendingUpgrade(
-                    name=name,
-                    current_version=old_ver,
-                    new_version=new_ver,
-                    source=PackageSource.NPM,
-                ))
-
-        # "remove" — packages being dropped (tracked as upgrades to flag).
-        for entry in data.get("remove", []):
-            if not isinstance(entry, dict):
-                continue
-            name = entry.get("name")
-            version = entry.get("version", "?")
-            if name:
-                upgrades.append(PendingUpgrade(
-                    name=name,
-                    current_version=version,
-                    new_version="(removed)",
-                    source=PackageSource.NPM,
-                ))
 
         # Enrich with metadata from the registry.
         self._enrich_metadata(upgrades)
@@ -381,17 +362,53 @@ class NpmAdapter:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_npm_json(stdout: str) -> dict | None:
-        """Extract the JSON object from npm's stdout.
+    def _parse_dryrun_lines(stdout: str) -> list[PendingUpgrade]:
+        """Parse the text progress lines from ``npm install --dry-run``.
 
-        ``npm install --dry-run --json`` may emit non-JSON progress lines
-        before the actual JSON object.  This method finds the first ``{``
-        and parses from there.
+        Each line is one of::
+
+            add <name> <version>
+            change <name> <old_version> => <new_version>
+            remove <name> <version>
+
+        Lines where ``old_version == new_version`` (reinstalls with no
+        actual change) are filtered out.  Other lines (warnings, the
+        trailing JSON summary) are ignored.
         """
-        idx = stdout.find("{")
-        if idx == -1:
-            return None
-        try:
-            return json.loads(stdout[idx:])
-        except json.JSONDecodeError:
-            return None
+        upgrades: list[PendingUpgrade] = []
+
+        for line in stdout.splitlines():
+            line = line.strip()
+
+            m = _ADD_RE.match(line)
+            if m:
+                upgrades.append(PendingUpgrade(
+                    name=m.group(1),
+                    current_version="(new)",
+                    new_version=m.group(2),
+                    source=PackageSource.NPM,
+                ))
+                continue
+
+            m = _CHANGE_RE.match(line)
+            if m:
+                old_ver, new_ver = m.group(2), m.group(3)
+                if old_ver != new_ver:
+                    upgrades.append(PendingUpgrade(
+                        name=m.group(1),
+                        current_version=old_ver,
+                        new_version=new_ver,
+                        source=PackageSource.NPM,
+                    ))
+                continue
+
+            m = _REMOVE_RE.match(line)
+            if m:
+                upgrades.append(PendingUpgrade(
+                    name=m.group(1),
+                    current_version=m.group(2),
+                    new_version="(removed)",
+                    source=PackageSource.NPM,
+                ))
+
+        return upgrades
